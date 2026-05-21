@@ -1,0 +1,6 @@
+/target/
+*.pdb
+*.profraw
+.env
+.env.*
+

@@ -1,0 +1,9 @@
+[package]
+name = "tohtml"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first document to structured HTML converter"
+license = "MIT"
+
+[dependencies]
+
