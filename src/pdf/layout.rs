@@ -1,5 +1,6 @@
 use crate::{
-    Block, Heading, Inline, List, ListItem, Paragraph, Table, TableAlignment, TableCell, TableRow,
+    Block, Heading, Inline, List, ListItem, Paragraph, RawHtml, Table, TableAlignment, TableCell,
+    TableRow,
 };
 
 use super::text::{text_lines, TextLine, TextSegment};
@@ -10,9 +11,12 @@ pub fn blocks_from_segments(segments: &[TextSegment]) -> Vec<Block> {
     let mut index = 0;
 
     while index < lines.len() {
-        if let Some((table, consumed)) = parse_table(&lines[index..]) {
+        if let Some((table, consumed)) = parse_table_with_header(&lines, index) {
             blocks.push(Block::Table(table));
             index += consumed;
+        } else if rotated_line(&lines[index]) {
+            blocks.push(rotated_text_block(&lines[index]));
+            index += 1;
         } else if let Some((list, consumed)) = parse_list(&lines[index..]) {
             blocks.push(Block::List(list));
             index += consumed;
@@ -30,6 +34,204 @@ pub fn blocks_from_segments(segments: &[TextSegment]) -> Vec<Block> {
     }
 
     blocks
+}
+
+fn rotated_line(line: &TextLine) -> bool {
+    normalized_rotation(line.rotation).abs() >= 30.0
+}
+
+fn normalized_rotation(rotation: f32) -> f32 {
+    let mut rotation = rotation % 360.0;
+    if rotation > 180.0 {
+        rotation -= 360.0;
+    } else if rotation < -180.0 {
+        rotation += 360.0;
+    }
+    rotation
+}
+
+fn rotated_text_block(line: &TextLine) -> Block {
+    let mut html = String::from("    <p class=\"pdf-rotated-text\" data-rotation=\"");
+    html.push_str(&format!("{:.0}", normalized_rotation(line.rotation)));
+    html.push_str("\">");
+    push_escaped_html(&mut html, &line.text);
+    html.push_str("</p>");
+    Block::RawHtml(RawHtml { html, source: None })
+}
+
+fn push_escaped_html(output: &mut String, text: &str) {
+    for ch in text.chars() {
+        match ch {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&#39;"),
+            _ => output.push(ch),
+        }
+    }
+}
+
+fn parse_table_with_header(lines: &[TextLine], index: usize) -> Option<(Table, usize)> {
+    let reference = discover_columns(lines, index)?;
+    // The starting line must itself look like a row in this column structure.
+    // This prevents the detector from forming a table that begins on a paragraph
+    // sitting above the real table.
+    let first_line = lines.get(index)?;
+    if !line_fits_columns(first_line, &reference) {
+        return None;
+    }
+    let mut rows: Vec<TableRow> = Vec::new();
+    let mut consumed = 0;
+    let mut previous: Option<&TextLine> = None;
+    let mut header_emitted = false;
+
+    for line in lines.iter().skip(index) {
+        if row_originates_left_of_table(line, &reference) {
+            break;
+        }
+        let cells = snap_to_columns(line, &reference);
+        if row_belongs(&cells, &reference) {
+            rows.push(table_row(&cells, !header_emitted));
+            header_emitted = true;
+            consumed += 1;
+            previous = Some(line);
+            continue;
+        }
+        if let Some(prev) = previous {
+            if extend_wrapped_table_cell(&reference, prev, line, &mut rows) {
+                consumed += 1;
+                previous = Some(line);
+                continue;
+            }
+        }
+        break;
+    }
+
+    (rows.len() >= 2).then_some((
+        Table {
+            rows,
+            caption: None,
+            source: None,
+        },
+        consumed,
+    ))
+}
+
+fn discover_columns(lines: &[TextLine], index: usize) -> Option<Vec<f32>> {
+    let window: Vec<&TextLine> = lines.iter().skip(index).take(4).collect();
+    if window.len() < 2 {
+        return None;
+    }
+
+    // Collect raw segment x positions per line. Column boundaries are positions
+    // that recur across multiple lines within tolerance — incidental word
+    // starts inside one cell will not align with anything in other rows.
+    let mut occurrences: Vec<(f32, usize)> = Vec::new();
+    for (line_index, line) in window.iter().enumerate() {
+        for segment in &line.cells {
+            occurrences.push((segment.x, line_index));
+        }
+    }
+
+    let columns = consensus_columns(&occurrences, window.len());
+    (columns.len() >= 2).then_some(columns)
+}
+
+fn consensus_columns(occurrences: &[(f32, usize)], window_size: usize) -> Vec<f32> {
+    let mut sorted: Vec<(f32, usize)> = occurrences.to_vec();
+    sorted.sort_by(|left, right| left.0.total_cmp(&right.0));
+
+    let mut clusters: Vec<(f32, Vec<usize>)> = Vec::new();
+    for (x, line) in sorted {
+        match clusters.last_mut() {
+            Some((column_x, lines_seen)) if (x - *column_x).abs() <= 4.0 => {
+                if !lines_seen.contains(&line) {
+                    lines_seen.push(line);
+                }
+                *column_x = column_x.min(x);
+            }
+            _ => clusters.push((x, vec![line])),
+        }
+    }
+
+    // Require a column to appear in more than half the window (rounded up),
+    // with an absolute floor of 2. This filters out trailing-digit positions
+    // that happen to recur in only a couple of rows.
+    let threshold = window_size.div_ceil(2).max(2);
+    clusters
+        .into_iter()
+        .filter(|(_, lines_seen)| lines_seen.len() >= threshold)
+        .map(|(x, _)| x)
+        .collect()
+}
+
+fn snap_to_columns(line: &TextLine, columns: &[f32]) -> Vec<TableTextCell> {
+    let mut cells: Vec<TableTextCell> = columns
+        .iter()
+        .map(|x| TableTextCell {
+            text: String::new(),
+            x: *x,
+            width: 0.0,
+        })
+        .collect();
+    // Iterate raw segments rather than clustered cells so that header words like
+    // "Version" and "Date" (which cluster together because their gap is below
+    // the cluster threshold) still land in their own columns.
+    for segment in &line.cells {
+        let column = nearest_column_index(columns, segment.x);
+        let cell = &mut cells[column];
+        if cell.text.is_empty() {
+            cell.text = segment.text.clone();
+            cell.x = segment.x;
+            cell.width = segment.width;
+        } else {
+            append_text(&mut cell.text, &segment.text);
+            cell.width = (segment.x + segment.width - cell.x).max(cell.width);
+        }
+    }
+    cells
+}
+
+fn nearest_column_index(columns: &[f32], x: f32) -> usize {
+    columns
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| (x - **left).abs().total_cmp(&(x - **right).abs()))
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+fn line_fits_columns(line: &TextLine, reference: &[f32]) -> bool {
+    // The line must start at or near the table's first column. A line starting
+    // significantly left of the table's left edge is a page-margin paragraph,
+    // not a table row.
+    if let Some(first_segment) = line.cells.first() {
+        if let Some(first_column) = reference.first() {
+            if first_segment.x + 6.0 < *first_column {
+                return false;
+            }
+        }
+    }
+    let cells = snap_to_columns(line, reference);
+    cells.first().is_some_and(|cell| !cell.text.is_empty())
+        && cells.iter().filter(|cell| !cell.text.is_empty()).count() >= 2
+}
+
+fn row_belongs(cells: &[TableTextCell], reference: &[f32]) -> bool {
+    // A real row should have content in the leftmost column and at least one more.
+    // This stops wrap lines (which only have content in the middle column) from
+    // looking like new rows.
+    cells.len() == reference.len()
+        && cells.first().is_some_and(|cell| !cell.text.is_empty())
+        && cells.iter().filter(|cell| !cell.text.is_empty()).count() >= 2
+}
+
+fn row_originates_left_of_table(line: &TextLine, reference: &[f32]) -> bool {
+    match (line.cells.first(), reference.first()) {
+        (Some(segment), Some(first_column)) => segment.x + 6.0 < *first_column,
+        _ => false,
+    }
 }
 
 fn parse_paragraph(lines: &[TextLine]) -> (String, usize) {
@@ -132,7 +334,31 @@ fn heading_line(lines: &[TextLine], index: usize) -> bool {
         return false;
     }
     let body_size = median_font_size(lines);
-    line.font_size >= body_size * 1.25
+    if line.font_size < body_size * 1.25 {
+        return false;
+    }
+    isolated_line(lines, index) || ends_like_heading(&line.text)
+}
+
+fn isolated_line(lines: &[TextLine], index: usize) -> bool {
+    let line = &lines[index];
+    let line_height = line.font_size.max(8.0);
+    let isolated_above = index
+        .checked_sub(1)
+        .and_then(|previous| lines.get(previous))
+        .is_none_or(|previous| previous.y - line.y >= line_height * 1.5);
+    let isolated_below = lines
+        .get(index + 1)
+        .is_none_or(|next| line.y - next.y >= line_height * 1.5);
+    isolated_above && isolated_below
+}
+
+fn ends_like_heading(text: &str) -> bool {
+    let trimmed = text.trim_end();
+    !trimmed.ends_with(',')
+        && !trimmed.ends_with(';')
+        && !trimmed.ends_with(':')
+        && trimmed.split_whitespace().count() <= 12
 }
 
 fn median_font_size(lines: &[TextLine]) -> f32 {
@@ -154,58 +380,6 @@ fn push_paragraph_line(text: &mut String, line: &str) {
         text.push(' ');
     }
     text.push_str(line);
-}
-
-fn parse_table(lines: &[TextLine]) -> Option<(Table, usize)> {
-    let first = lines.first()?;
-    let (reference, first_cells) = table_start(lines)?;
-    let mut rows = vec![table_row(&first_cells, true)];
-    let mut consumed = 1;
-    let mut previous = first;
-    for line in lines.iter().skip(1) {
-        let cells = table_cells(line);
-        if aligned_table_row(&reference, &cells) {
-            rows.push(table_row(&cells, false));
-            consumed += 1;
-            previous = line;
-            continue;
-        }
-        if extend_wrapped_table_cell(&reference, previous, line, &mut rows) {
-            consumed += 1;
-            previous = line;
-            continue;
-        }
-        if !aligned_table_row(&reference, &cells) {
-            break;
-        }
-    }
-
-    (rows.len() >= 2).then_some((
-        Table {
-            rows,
-            caption: None,
-            source: None,
-        },
-        consumed,
-    ))
-}
-
-fn table_start(lines: &[TextLine]) -> Option<(Vec<f32>, Vec<TableTextCell>)> {
-    let first = lines.first()?;
-    let first_cells = table_cells(first);
-    if tabular_cells(&first_cells) {
-        return Some((column_positions(&first_cells), first_cells));
-    }
-
-    let next_cells = table_cells(lines.get(1)?);
-    if message_item_header(first) && tabular_cells(&next_cells) {
-        return Some((
-            column_positions(&next_cells),
-            synthetic_message_item_header(&next_cells),
-        ));
-    }
-
-    None
 }
 
 fn tabular_line(line: &TextLine) -> bool {
@@ -256,19 +430,6 @@ fn tabular_cells(cells: &[TableTextCell]) -> bool {
         && cells
             .windows(2)
             .all(|cells| cells[1].x - cells[0].x >= 24.0)
-}
-
-fn column_positions(cells: &[TableTextCell]) -> Vec<f32> {
-    cells.iter().map(|cell| cell.x).collect()
-}
-
-fn aligned_table_row(reference: &[f32], candidate: &[TableTextCell]) -> bool {
-    tabular_cells(candidate)
-        && reference.len() == candidate.len()
-        && reference
-            .iter()
-            .zip(candidate)
-            .all(|(left, right)| (*left - right.x).abs() <= 12.0)
 }
 
 fn extend_wrapped_table_cell(
@@ -324,47 +485,6 @@ fn fallback_continuation_index(row: &TableRow, line: &TextLine) -> Option<usize>
         return None;
     }
     row.cells.len().checked_sub(1).filter(|index| *index > 0)
-}
-
-fn message_item_header(line: &TextLine) -> bool {
-    let text = line.text.as_str();
-    text.contains("MessageItem") && text.contains("<XMLTag>") && text.contains("Mult.")
-}
-
-fn synthetic_message_item_header(reference: &[TableTextCell]) -> Vec<TableTextCell> {
-    if !matches!(reference.len(), 4..=6) {
-        return reference.to_vec();
-    }
-
-    let labels = match reference.len() {
-        4 => vec!["MessageItem", "<XMLTag>", "Mult.", "Represent./Type"],
-        5 => vec![
-            "Index Or",
-            "MessageItem",
-            "<XMLTag>",
-            "Mult.",
-            "Represent./Type",
-        ],
-        6 => vec![
-            "Index",
-            "Or",
-            "MessageItem",
-            "<XMLTag>",
-            "Mult.",
-            "Represent./Type",
-        ],
-        _ => unreachable!(),
-    };
-
-    reference
-        .iter()
-        .zip(labels)
-        .map(|(cell, label)| TableTextCell {
-            text: label.to_string(),
-            x: cell.x,
-            width: cell.width,
-        })
-        .collect()
 }
 
 fn table_row(cells: &[TableTextCell], header: bool) -> TableRow {

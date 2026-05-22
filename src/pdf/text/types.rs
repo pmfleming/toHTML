@@ -5,6 +5,7 @@ pub struct TextSegment {
     pub y: f32,
     pub font_size: f32,
     pub width: f32,
+    pub rotation: f32,
     pub role: Option<String>,
 }
 
@@ -16,8 +17,14 @@ impl TextSegment {
             y,
             font_size,
             width,
+            rotation: 0.0,
             role: None,
         }
+    }
+
+    pub fn with_rotation(mut self, rotation: f32) -> Self {
+        self.rotation = rotation;
+        self
     }
 
     pub fn with_role(mut self, role: Option<String>) -> Self {

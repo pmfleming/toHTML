@@ -14,6 +14,8 @@ pub(super) struct TextState {
     horizontal_scaling: f32,
     text_rise: f32,
     rendering_mode: i32,
+    ctm: Matrix,
+    text_rotation: f32,
     pub font_name: Option<String>,
 }
 
@@ -31,8 +33,52 @@ impl Default for TextState {
             horizontal_scaling: 100.0,
             text_rise: 0.0,
             rendering_mode: 0,
+            ctm: Matrix::identity(),
+            text_rotation: 0.0,
             font_name: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Matrix {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+}
+
+impl Matrix {
+    fn identity() -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    fn multiply(self, other: Self) -> Self {
+        Self {
+            a: self.a * other.a + self.c * other.b,
+            b: self.b * other.a + self.d * other.b,
+            c: self.a * other.c + self.c * other.d,
+            d: self.b * other.c + self.d * other.d,
+            e: self.a * other.e + self.c * other.f + self.e,
+            f: self.b * other.e + self.d * other.f + self.f,
+        }
+    }
+
+    fn transform_vector(self, x: f32, y: f32) -> (f32, f32) {
+        (self.a * x + self.c * y, self.b * x + self.d * y)
+    }
+
+    fn rotation_degrees(self) -> f32 {
+        self.b.atan2(self.a).to_degrees()
     }
 }
 
@@ -47,6 +93,7 @@ impl TextState {
     pub fn segment(&self, text: String, width: Option<f32>) -> TextSegment {
         let width = width.unwrap_or_else(|| estimated_text_width(&text, self.font_size));
         TextSegment::new(text, self.x, self.y + self.text_rise, self.font_size, width)
+            .with_rotation(self.text_rotation)
     }
 
     pub fn text_advance(&self, text: &str, width: f32) -> f32 {
@@ -56,6 +103,12 @@ impl TextState {
 
     pub fn advance_text(&mut self, text: &str, width: f32) {
         self.x += self.text_advance(text, width);
+    }
+
+    pub fn apply_tj_adjustment(&mut self, adjustment: f32) {
+        // TJ adjustments are expressed in 1/1000 em; negative values move x forward.
+        let horizontal = self.horizontal_scaling / 100.0;
+        self.x += -adjustment / 1000.0 * self.font_size * horizontal.max(0.01);
     }
 
     pub fn set_font_size(&mut self, size: f32) {
@@ -95,17 +148,40 @@ impl TextState {
     }
 
     pub fn move_position(&mut self, tx: f32, ty: f32) {
+        let (tx, ty) = self.ctm.transform_vector(tx, ty);
         self.x += tx;
         self.y += ty;
         self.line_x = self.x;
         self.line_y = self.y;
     }
 
-    pub fn set_position(&mut self, x: f32, y: f32) {
-        self.x = x;
-        self.y = y;
-        self.line_x = x;
-        self.line_y = y;
+    pub fn set_text_matrix(&mut self, values: [f32; 6]) {
+        let text_matrix = Matrix {
+            a: values[0],
+            b: values[1],
+            c: values[2],
+            d: values[3],
+            e: values[4],
+            f: values[5],
+        };
+        let combined = self.ctm.multiply(text_matrix);
+        self.x = combined.e;
+        self.y = combined.f;
+        self.line_x = combined.e;
+        self.line_y = combined.f;
+        self.text_rotation = combined.rotation_degrees();
+    }
+
+    pub fn concat_matrix(&mut self, values: [f32; 6]) {
+        let matrix = Matrix {
+            a: values[0],
+            b: values[1],
+            c: values[2],
+            d: values[3],
+            e: values[4],
+            f: values[5],
+        };
+        self.ctm = self.ctm.multiply(matrix);
     }
 
     pub fn next_line(&mut self) {

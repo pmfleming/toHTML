@@ -102,6 +102,7 @@ pub trait PdfDictionaryExt {
     fn array(&self, key: &str) -> Option<&[PdfValue]>;
     fn integer(&self, key: &str) -> Option<i64>;
     fn name(&self, key: &str) -> Option<&str>;
+    fn string_bytes(&self, key: &str) -> Option<&[u8]>;
 }
 
 impl PdfDictionaryExt for PdfDictionary {
@@ -129,6 +130,13 @@ impl PdfDictionaryExt for PdfDictionary {
     fn name(&self, key: &str) -> Option<&str> {
         match self.get(key)? {
             PdfValue::Name(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn string_bytes(&self, key: &str) -> Option<&[u8]> {
+        match self.get(key)? {
+            PdfValue::String(bytes) => Some(bytes),
             _ => None,
         }
     }

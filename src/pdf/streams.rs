@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::{collections::HashMap, io::Read};
 
 use flate2::read::ZlibDecoder;
 
@@ -178,6 +178,46 @@ pub fn stream_data_for_object(
     Ok(Some(decode_stream(header, data)?))
 }
 
+pub fn named_object_refs(bytes: &[u8], name_prefix: &str) -> HashMap<String, u32> {
+    pdf_tokens(bytes)
+        .windows(4)
+        .filter_map(|window| named_object_ref(window, name_prefix))
+        .collect()
+}
+
+pub fn object_ref_after(bytes: &[u8], marker: &[u8]) -> Option<u32> {
+    let marker = String::from_utf8_lossy(marker);
+    pdf_tokens(bytes)
+        .windows(4)
+        .find_map(|window| object_ref_window(window, &marker))
+}
+
+pub fn number_after(bytes: &[u8], marker: &[u8]) -> Option<u32> {
+    let marker = String::from_utf8_lossy(marker);
+    pdf_tokens(bytes)
+        .windows(2)
+        .find(|window| window[0] == marker)
+        .and_then(|window| window[1].parse().ok())
+}
+
+pub fn font_name_after(bytes: &[u8], marker: &[u8]) -> Option<String> {
+    pdf_tokens(bytes)
+        .windows(2)
+        .find(|window| window[0].as_bytes() == marker && window[1].starts_with("/F"))
+        .map(|window| strip_name_prefix(&window[1]))
+}
+
+pub fn object_ids(bytes: &[u8]) -> Vec<u32> {
+    pdf_tokens(bytes)
+        .windows(3)
+        .filter_map(|window| {
+            (window[1] == "0" && window[2] == "obj")
+                .then(|| window[0].parse().ok())
+                .flatten()
+        })
+        .collect()
+}
+
 fn decode_stream(header: &[u8], data: &[u8]) -> Result<Vec<u8>, ConvertError> {
     let filters = legacy_stream_filters(header);
     decode_filters(&filters, data)
@@ -314,7 +354,7 @@ fn run_length_decode(data: &[u8]) -> Vec<u8> {
             }
             129..=255 => {
                 if let Some(byte) = data.get(index).copied() {
-                    output.extend(std::iter::repeat(byte).take(257 - usize::from(length)));
+                    output.extend(std::iter::repeat_n(byte, 257 - usize::from(length)));
                 }
                 index += 1;
             }
@@ -361,6 +401,53 @@ fn trim_stream_newlines(data: &[u8]) -> &[u8] {
     data.strip_suffix(b"\r\n")
         .or_else(|| data.strip_suffix(b"\n"))
         .unwrap_or(data)
+}
+
+fn named_object_ref(window: &[String], name_prefix: &str) -> Option<(String, u32)> {
+    if window[0].starts_with(name_prefix) && window[2] == "0" && window[3] == "R" {
+        Some((strip_name_prefix(&window[0]), window[1].parse().ok()?))
+    } else {
+        None
+    }
+}
+
+fn object_ref_window(window: &[String], marker: &str) -> Option<u32> {
+    (window[0] == marker && window[2] == "0" && window[3] == "R")
+        .then(|| window[1].parse().ok())
+        .flatten()
+}
+
+fn strip_name_prefix(name: &str) -> String {
+    name.trim_start_matches('/').to_string()
+}
+
+fn pdf_tokens(bytes: &[u8]) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            byte if byte.is_ascii_whitespace() || is_token_delimiter(byte) => index += 1,
+            _ => tokens.push(read_token(bytes, &mut index)),
+        }
+    }
+    tokens
+}
+
+fn read_token(bytes: &[u8], index: &mut usize) -> String {
+    let start = *index;
+    *index += 1;
+    while *index < bytes.len()
+        && !bytes[*index].is_ascii_whitespace()
+        && !is_token_delimiter(bytes[*index])
+        && bytes[*index] != b'/'
+    {
+        *index += 1;
+    }
+    String::from_utf8_lossy(&bytes[start..*index]).to_string()
+}
+
+fn is_token_delimiter(byte: u8) -> bool {
+    matches!(byte, b'<' | b'>' | b'[' | b']' | b'(' | b')')
 }
 
 fn find_token(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {

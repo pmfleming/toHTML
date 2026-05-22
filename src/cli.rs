@@ -43,6 +43,9 @@ fn convert_file(
     if let Some(asset_dir) = asset_dir {
         assets::write(format, &input, &mut document, asset_dir, output)?;
     }
+    if format == Format::Pdf {
+        document.metadata.visual_source = pdf_visual_source(input_path, output);
+    }
     let html = render_html(&document);
 
     if let Some(output) = output {
@@ -75,6 +78,62 @@ fn same_file(left: &Path, right: &Path) -> bool {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
     }
+}
+
+fn pdf_visual_source(input_path: &Path, output: Option<&Path>) -> Option<String> {
+    let source = input_copy_path(input_path)?;
+    let path = output
+        .and_then(|path| path.parent())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .and_then(|parent| relative_path(parent, &source))
+        .unwrap_or(source);
+    Some(url_path(&path))
+}
+
+fn relative_path(from_dir: &Path, to: &Path) -> Option<PathBuf> {
+    let from = normal_components(from_dir)?;
+    let to = normal_components(to)?;
+    let shared = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+
+    let mut result = PathBuf::new();
+    for _ in shared..from.len() {
+        result.push("..");
+    }
+    for component in &to[shared..] {
+        result.push(component);
+    }
+    Some(result)
+}
+
+fn normal_components(path: &Path) -> Option<Vec<String>> {
+    path.components()
+        .map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+            std::path::Component::CurDir => Some(".".to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn url_path(path: &Path) -> String {
+    let value = path.to_string_lossy().replace('\\', "/");
+    let mut encoded = String::new();
+    for ch in value.chars() {
+        match ch {
+            ' ' => encoded.push_str("%20"),
+            '#' => encoded.push_str("%23"),
+            '%' => encoded.push_str("%25"),
+            '"' => encoded.push_str("%22"),
+            '<' => encoded.push_str("%3C"),
+            '>' => encoded.push_str("%3E"),
+            _ => encoded.push(ch),
+        }
+    }
+    encoded
 }
 
 fn write_output(output: &Path, html: &str) -> Result<(), CliError> {
@@ -319,6 +378,17 @@ mod tests {
         assert_eq!(
             input_copy_path(Path::new("C:/docs/report.pdf")),
             Some(PathBuf::from("input").join("report.pdf"))
+        );
+    }
+
+    #[test]
+    fn pdf_visual_source_points_from_output_to_copied_input() {
+        assert_eq!(
+            pdf_visual_source(
+                Path::new("C:/docs/source file.pdf"),
+                Some(Path::new("output/source file.html"))
+            ),
+            Some("../input/source%20file.pdf".to_string())
         );
     }
 }

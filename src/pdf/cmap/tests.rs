@@ -15,6 +15,17 @@ fn parses_bfchar_mappings() {
 }
 
 #[test]
+fn parses_packed_bfchar_mappings_on_one_line() {
+    let cmap = CMap::parse(
+        br#"
+        /CIDInit /ProcSet findresource begin 12 dict begin begincmap 3 beginbfchar <0003> <0020> <0037> <0054> <004B> <0068> endbfchar endcmap
+        "#,
+    );
+
+    assert_eq!(cmap.decode(&[0, 3, 0, 0x37, 0, 0x4b]), " Th");
+}
+
+#[test]
 fn parses_bfrange_mappings() {
     let cmap = CMap::parse(
         br#"

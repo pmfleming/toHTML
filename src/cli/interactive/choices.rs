@@ -2,18 +2,13 @@ use std::path::Path;
 
 use super::super::Format;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum FormatChoice {
+    #[default]
     Auto,
     Markdown,
     Docx,
     Pdf,
-}
-
-impl Default for FormatChoice {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl FormatChoice {

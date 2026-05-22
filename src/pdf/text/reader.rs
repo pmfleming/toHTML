@@ -6,8 +6,14 @@ pub(super) enum Token {
     Array(Vec<ArrayToken>),
     Hex(Vec<u8>),
     Name(String),
-    ActualText(Vec<u8>),
+    MarkedProps(MarkedProps),
     Word(String),
+}
+
+#[derive(Default, Clone, Debug)]
+pub(super) struct MarkedProps {
+    pub actual_text: Option<Vec<u8>>,
+    pub mcid: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,10 +37,14 @@ impl<'a> Reader<'a> {
         match self.current()? {
             b'(' => Some(Token::Literal(self.literal_string())),
             b'[' => Some(Token::Array(self.array())),
-            b'<' if self.peek() == Some(b'<') => self
-                .dictionary_actual_text()
-                .map(Token::ActualText)
-                .or_else(|| self.next_token()),
+            b'<' if self.peek() == Some(b'<') => {
+                let props = self.dictionary_marked_props();
+                if props.actual_text.is_some() || props.mcid.is_some() {
+                    Some(Token::MarkedProps(props))
+                } else {
+                    self.next_token()
+                }
+            }
             b'<' => Some(Token::Hex(self.hex_string())),
             b'/' => Some(Token::Name(self.name())),
             _ => self.word().map(Token::Word),
@@ -69,7 +79,7 @@ impl<'a> Reader<'a> {
                 Some(b']') => break,
                 Some(b'(') => items.push(ArrayToken::Text(self.literal_string())),
                 Some(b'<') if self.peek() == Some(b'<') => {
-                    self.dictionary_actual_text();
+                    self.dictionary_marked_props();
                 }
                 Some(b'<') => items.push(ArrayToken::Text(self.hex_string())),
                 Some(b'/') => {
@@ -184,21 +194,37 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn dictionary_actual_text(&mut self) -> Option<Vec<u8>> {
+    fn dictionary_marked_props(&mut self) -> MarkedProps {
         self.index += 2;
         let mut depth = 1;
-        let mut actual_text = None;
+        let mut props = MarkedProps::default();
         while self.index + 1 < self.bytes.len() && depth > 0 {
             match (self.current(), self.peek()) {
                 (Some(b'<'), Some(b'<')) => self.enter_dictionary(&mut depth),
                 (Some(b'>'), Some(b'>')) => self.exit_dictionary(&mut depth),
-                (Some(b'/'), _) if self.name_at_current() == "ActualText" => {
-                    actual_text = self.read_actual_text_value();
-                }
+                (Some(b'/'), _) => match self.name_at_current().as_str() {
+                    "ActualText" => props.actual_text = self.read_actual_text_value(),
+                    "MCID" => props.mcid = self.read_mcid_value(),
+                    _ => self.index += 1,
+                },
                 _ => self.index += 1,
             }
         }
-        actual_text
+        props
+    }
+
+    fn read_mcid_value(&mut self) -> Option<u32> {
+        self.name();
+        self.skip_ignored();
+        let start = self.index;
+        while matches!(self.current(), Some(byte) if byte.is_ascii_digit()) {
+            self.index += 1;
+        }
+        let digits = &self.bytes[start..self.index];
+        if digits.is_empty() {
+            return None;
+        }
+        String::from_utf8_lossy(digits).parse().ok()
     }
 
     fn name_at_current(&self) -> String {

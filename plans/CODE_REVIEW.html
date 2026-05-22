@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>toHTML Code Review</title>
+</head>
+<body>
+  <header>
+    <h1>toHTML Code Review</h1>
+    <p>
+      Review date: 2026-05-22. Reviewer: Claude (Opus 4.7).
+      Scope: implementation under <code>src/</code> compared against
+      <a href="GOAL.md">GOAL.md</a>,
+      <a href="PDF_READABLE_HTML_SPEC.html">PDF_READABLE_HTML_SPEC</a>,
+      ISO 32000-1:2008 and ISO 32000-2:2020 (via the spec's clause references),
+      and the sample input/output pairs in
+      <a href="../input/">input/</a> and <a href="../output/">output/</a>.
+    </p>
+  </header>
+
+  <main>
+    <section id="summary">
+      <h2>1. Summary</h2>
+      <p>
+        The architecture and document model match the spec well. The PDF parser
+        is correctly object-graph driven rather than byte-scan, and the
+        text-operator interpreter covers the surface required by Goals 1&ndash;5.
+        ToUnicode CMap handling, marked-content roles, ActualText, and
+        Artifact-filtering give the implementation a credible footing for
+        Goals 11&ndash;13.
+      </p>
+      <p>
+        Three things need attention before the project can claim its own
+        Definition of Done:
+      </p>
+      <ol>
+        <li>
+          <strong>A <code>&lt;style&gt;</code> block is emitted on every
+          document.</strong> This directly violates GOAL.md, the README, and
+          spec &sect;2.3 / Goal 14.
+        </li>
+        <li>
+          <strong>Per-fixture string repairs and a per-fixture synthetic table
+          header have been merged into the core pipeline.</strong> These mask
+          Goal 6/7 gaps and will not generalise.
+        </li>
+        <li>
+          <strong>Sample outputs in <a href="../output/">output/</a> show
+          regressions the unit tests do not catch</strong>: corrupted
+          <code>lang</code>, missing PDF titles, no <code>PageBreak</code>
+          markers, paragraph fragments classified as headings, and broken word
+          boundaries that the Stage 9 note already identified as open.
+        </li>
+      </ol>
+    </section>
+
+    <section id="goal-status">
+      <h2>2. Goal-by-Goal Status</h2>
+      <p>
+        The table below evaluates each goal from
+        <a href="PDF_READABLE_HTML_SPEC.html">PDF_READABLE_HTML_SPEC</a>. The
+        ISO 32000 clauses cited in each goal were not opened directly during
+        this review; the spec is treated as the faithful paraphrase the
+        repository declares it to be.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Goal</th>
+            <th>Status</th>
+            <th>Where</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>0 &mdash; Support contract</td>
+            <td>Mostly done</td>
+            <td><code>src/pdf/mod.rs</code>, <code>src/pdf/streams.rs</code></td>
+            <td>Non-extractable placeholders, image-content warning, encryption warning, xref/object-stream warning are all emitted.</td>
+          </tr>
+          <tr>
+            <td>1 &mdash; Lexical and object parsing</td>
+            <td>Done for the required subset</td>
+            <td><code>src/pdf/object.rs</code>, <code>src/pdf/text/reader.rs</code>, <code>src/pdf/text/syntax.rs</code></td>
+            <td>Real tokenisation, indirect-reference handling, balanced literal strings, hex strings, names, arrays, dictionaries, streams. No raw parenthesis byte scanning.</td>
+          </tr>
+          <tr>
+            <td>2 &mdash; Document object location</td>
+            <td>Partial</td>
+            <td><code>src/pdf/streams.rs</code></td>
+            <td>Catalog &rarr; <code>/Pages</code> &rarr; <code>/Kids</code> walk is present, with a "latest revision" lookup for incremental updates. XRef streams and object streams produce a warning but are not decoded. Acceptable for the current spec scope, but worth a fixture.</td>
+          </tr>
+          <tr>
+            <td>3 &mdash; Stream filters</td>
+            <td>Done for the spec scope</td>
+            <td><code>src/pdf/streams.rs::decode_filters</code></td>
+            <td><code>FlateDecode</code>, <code>ASCIIHexDecode</code>, <code>ASCII85Decode</code>, <code>RunLengthDecode</code> implemented; image-only filters are pass-through. <code>/DecodeParms</code> is not honoured &mdash; fine for current samples but a future risk.</td>
+          </tr>
+          <tr>
+            <td>4 &mdash; Walk pages in order</td>
+            <td>Partial</td>
+            <td><code>src/pdf/mod.rs::pdf_to_document</code></td>
+            <td>Page-tree traversal and <code>/Contents</code> single-or-array handling work. <strong>No <code>Block::PageBreak</code> is emitted between pages</strong>, breaking spec &sect;4.4 SHOULD and the &sect;5 mapping.</td>
+          </tr>
+          <tr>
+            <td>5 &mdash; Text objects and showing operators</td>
+            <td>Done</td>
+            <td><code>src/pdf/text/parser.rs</code></td>
+            <td>BT/ET, Tj/TJ/'/", Td/TD/Tm/T*, q/Q, Tc/Tw/Tz/TL/Tr/Ts, TJ adjustment-to-space conversion. Invisible render modes are filtered.</td>
+          </tr>
+          <tr>
+            <td>6 &mdash; Character codes to Unicode</td>
+            <td>Partial</td>
+            <td><code>src/pdf/cmap.rs</code>, <code>src/pdf/cmap/font_refs.rs</code></td>
+            <td>ToUnicode <code>beginbfchar</code> and <code>beginbfrange</code> are parsed. <strong>No Differences arrays, no WinAnsi/MacRoman/StandardEncoding fallback, no font-descriptor flags</strong>. Files without ToUnicode therefore fall back to raw bytes via <code>readable_byte</code> &mdash; works for ASCII fonts only.</td>
+          </tr>
+          <tr>
+            <td>7 &mdash; Words, lines, paragraphs</td>
+            <td>Weak</td>
+            <td><code>src/pdf/layout.rs</code>, <code>src/pdf/fonts.rs</code>, <code>src/pdf/postprocess.rs</code></td>
+            <td>Font widths feed segment advance. However <code>postprocess::REPAIRS</code> is a hardcoded list of joined-word fixups that exists only because the layout pass cannot yet infer word gaps reliably (see &sect;3 below).</td>
+          </tr>
+          <tr>
+            <td>8 &mdash; Block detection</td>
+            <td>Partial</td>
+            <td><code>src/pdf/layout.rs::heading_line</code>, <code>postprocess::repeated_short_paragraphs</code></td>
+            <td>Heading via font-size ratio against the line median. Ordered and unordered markers <code>- * + &bull;</code> with numeric variants. Repeated-line header/footer removal. Bullet glyphs are missed when extraction loses the marker (see Installation Guidelines output). Font-naming bold/italic cues are not used.</td>
+          </tr>
+          <tr>
+            <td>9 &mdash; Tables</td>
+            <td>Partial</td>
+            <td><code>src/pdf/layout.rs::parse_table</code></td>
+            <td>Aligned-x column detection, wrap-continuation, numeric-cell alignment. A per-fixture <code>message_item_header</code> shim is wired in (<code>src/pdf/layout.rs:329</code>) &mdash; should not be in core code.</td>
+          </tr>
+          <tr>
+            <td>10 &mdash; Links and images</td>
+            <td>Partial</td>
+            <td><code>src/pdf/mod.rs::apply_detected_links</code>, <code>add_image_text_warning</code></td>
+            <td><code>/URI</code> annotations are matched against extracted text. Image XObjects only generate a warning &mdash; no asset extraction, no <code>figure</code>/<code>figcaption</code>, no <code>/Alt</code> from structure.</td>
+          </tr>
+          <tr>
+            <td>11 &mdash; Tagged PDF</td>
+            <td>Partial</td>
+            <td><code>src/pdf/text/parser.rs::begin_marked_content</code>, <code>src/pdf/layout.rs::tagged_heading_level</code></td>
+            <td>BMC/BDC/EMC tracked, Artifact filtered, <code>H</code>/<code>H1</code>&ndash;<code>H6</code> roles drive heading levels. <strong>No <code>/StructTreeRoot</code> traversal</strong>, no role maps, no namespace handling, no structure-tree-driven table headers/spans.</td>
+          </tr>
+          <tr>
+            <td>12 &mdash; ActualText / Lang / Alt</td>
+            <td>Partial</td>
+            <td><code>src/pdf/text/parser.rs::current_actual_text</code>, <code>src/pdf/mod.rs::document_language</code></td>
+            <td>ActualText stacking over marked content is correct. <code>/Lang</code> extraction uses a byte-window literal lookup that does not decode UTF-16BE or hex strings &mdash; the Inventronics output saves <code>lang="&#xFFFD;&#xFFFD; E N - U S"</code>. No <code>/Alt</code> from the structure tree.</td>
+          </tr>
+          <tr>
+            <td>13 &mdash; Hidden / invisible / duplicate</td>
+            <td>Partial</td>
+            <td><code>src/pdf/text/state.rs</code>, <code>src/pdf/text/parser.rs::push_decoded_segment</code></td>
+            <td>Invisible render modes excluded. No deduplication of overlapping identical segments.</td>
+          </tr>
+          <tr>
+            <td>14 &mdash; Formatting without CSS</td>
+            <td><strong>Violated</strong></td>
+            <td><code>src/html/mod.rs::render_default_styles</code></td>
+            <td>Every document carries an inline <code>&lt;style&gt;</code> block. The test <code>renders_complete_html_document_without_css_or_javascript</code> at <code>src/html/mod.rs:110</code> is named as if it forbids CSS but asserts <code>html.contains("font-size: 12px")</code>. Inline emphasis/strong inference from font naming is not implemented.</td>
+          </tr>
+          <tr>
+            <td>15 &mdash; Precise warnings</td>
+            <td>Partial</td>
+            <td><code>src/pdf/streams.rs::document_warnings</code>, <code>src/pdf/mod.rs</code></td>
+            <td>Encryption, xref-stream, object-stream, per-page empty, image content, link-target-not-found. No per-page attribution on warnings, no CMap-failure warning, no unsupported-filter detail per stream.</td>
+          </tr>
+          <tr>
+            <td>16 &mdash; Fixtures</td>
+            <td>Light</td>
+            <td><code>tests/conversion_fixtures.rs</code></td>
+            <td>Five small PDF fixtures plus module unit tests. Missing: incremental updates, xref streams, multi-byte CMaps, ActualText spans, image-only pages, repeated header/footer, multi-column prose vs. tables.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="critical">
+      <h2>3. Critical Issues</h2>
+
+      <section id="issue-css">
+        <h3>3.1 The renderer always emits CSS</h3>
+        <p>
+          <code>src/html/mod.rs::render_default_styles</code> writes an inline
+          <code>&lt;style&gt;</code> block on every document. This contradicts:
+        </p>
+        <ul>
+          <li><a href="GOAL.md">GOAL.md</a>: <em>"The generated document must not include CSS or JavaScript. Structure should come from HTML elements and attributes only."</em></li>
+          <li><a href="../README.md">README.md</a>: <em>"No CSS or JavaScript output."</em></li>
+          <li><a href="PDF_READABLE_HTML_SPEC.html">Spec &sect;2.3</a>: <em>"no CSS and no JavaScript by default."</em></li>
+          <li><a href="PDF_READABLE_HTML_SPEC.html">Spec Goal 14</a>: <em>"The converter MUST NOT use CSS positioning to recreate the PDF page."</em></li>
+          <li><a href="STAGE_9_PDF_SEMANTICS.md">STAGE_9_PDF_SEMANTICS</a>: <em>"Output font and pixel fidelity are intentionally out of scope."</em></li>
+        </ul>
+        <p>
+          The accompanying test at <code>src/html/mod.rs:110</code> is named
+          <code>renders_complete_html_document_without_css_or_javascript</code>
+          but asserts that <code>font-size: 12px</code> is present. The test
+          name and its assertion are in direct conflict and should be inverted.
+        </p>
+        <p>Recommended fix: delete <code>render_default_styles</code> and its caller, then change the test to assert <code>!html.contains("&lt;style")</code>.</p>
+      </section>
+
+      <section id="issue-repairs">
+        <h3>3.2 Per-fixture string repairs in core code</h3>
+        <p>
+          <code>src/pdf/postprocess.rs:83</code> defines a <code>REPAIRS</code>
+          array of more than fifty hard-coded string substitutions such as
+          <code>"Annex BClieop03"</code> &rarr; <code>"Annex B Clieop03"</code>
+          and <code>"Version7.0tFebruary2013"</code> &rarr;
+          <code>"Version 7.0 - February 2013"</code>. These are tuned to the
+          XML-Message-for-SCT sample. They do not generalise, will rot quickly,
+          and disguise the real Goal 6/7 gap: font-width-based gap inference
+          should be putting the missing spaces in.
+        </p>
+        <p>
+          Similarly, <code>src/pdf/layout.rs:329</code> hosts a
+          <code>message_item_header</code> / <code>synthetic_message_item_header</code>
+          pair whose only purpose is to label that one PDF's columns
+          <em>"MessageItem"</em>, <em>"&lt;XMLTag&gt;"</em>, <em>"Mult."</em>,
+          <em>"Represent./Type"</em>. This is per-document logic in a
+          general-purpose converter.
+        </p>
+        <p>
+          Recommended fix: move both to a dedicated test fixture, then replace
+          them with a real gap classifier in <code>layout.rs</code> that uses
+          <code>FontMetrics::text_width</code> plus a body-text font-size floor
+          to decide when adjacent segments should join or insert a space.
+        </p>
+      </section>
+
+      <section id="issue-pdf-title">
+        <h3>3.3 PDF document title and language are not extracted properly</h3>
+        <p>
+          Every converted PDF in <a href="../output/">output/</a> shows
+          <code>&lt;title&gt;toHTML document&lt;/title&gt;</code>.
+          <code>DocumentMetadata.title</code> is never set from the PDF's
+          <code>/Info /Title</code> entry or XMP metadata, even though the
+          spec &sect;5 maps that explicitly to <code>DocumentMetadata.title</code>.
+        </p>
+        <p>
+          <code>src/pdf/mod.rs::document_language</code> finds the bytes after
+          <code>/Lang</code> with a substring search and reads everything between
+          the first <code>(</code> and <code>)</code> as a Latin-1 string. It
+          does not handle hex strings, indirect references, or UTF-16BE
+          literals with a BOM. The Inventronics output saves
+          <code>lang="&#xFFFD;&#xFFFD; E N - U S"</code> &mdash; the
+          <code>0xFE 0xFF</code> BOM has been emitted as replacement
+          characters and the UTF-16 bytes have been read as individual
+          characters.
+        </p>
+        <p>
+          Recommended fix: read <code>/Info</code> via
+          <code>PdfObjects</code>, decode each string with the same routine as
+          text-content strings (covering hex, UTF-16BE, and the
+          <code>PDFDocEncoding</code> default), and reuse that routine for
+          <code>/Lang</code>.
+        </p>
+      </section>
+
+      <section id="issue-pagebreak">
+        <h3>3.4 No PageBreak between pages</h3>
+        <p>
+          <code>Block::PageBreak</code> exists in the model but
+          <code>src/pdf/mod.rs::pdf_to_document</code> never emits one. Spec
+          &sect;4.4 lists this as SHOULD, and &sect;5 maps page boundaries to
+          <code>Block::PageBreak</code>. The HTML renderer already supports
+          rendering it (<code>src/html/blocks/pages.rs</code>).
+        </p>
+        <p>
+          Recommended fix: after the inner loop in
+          <code>pdf_to_document</code>, append a
+          <code>Block::PageBreak</code> carrying <code>page.page_number</code>
+          when more than one page exists and the page produced any blocks.
+        </p>
+      </section>
+
+      <section id="issue-headings">
+        <h3>3.5 Heading classifier is too eager</h3>
+        <p>
+          <code>src/pdf/layout.rs::heading_line</code> calls a line a heading
+          whenever its font size is at least 1.25&times; the line median.
+          On the Installation Guidelines sample this produces eleven
+          <code>&lt;h2&gt;</code> elements, many of which are mid-paragraph
+          fragments such as <em>"Best"</em>, <em>"Avoid Vertical mounting,
+          enabling water to collect at junction"</em>, and full sentences
+          ending in periods that nonetheless beat the median by enough to
+          qualify.
+        </p>
+        <p>
+          Recommended fix: require additional evidence before classifying a
+          line as a heading: short length, no terminal period (already checked),
+          isolated vertical spacing both above and below, and either a tagged
+          role or a bold-flagged font.
+        </p>
+      </section>
+    </section>
+
+    <section id="quality">
+      <h2>4. Repository-Wide Quality Observations</h2>
+      <ul>
+        <li>
+          <strong>Module decomposition is good.</strong> <code>src/pdf/text/</code>
+          and <code>src/pdf/cmap/</code> are broken into reader, state,
+          parser, strings, syntax, and tests. The Stage 9 note's worry that
+          PDF parsing could become a hotspot has been actively managed.
+        </li>
+        <li>
+          <strong>The document model in <code>src/model.rs</code> matches the
+          spec &sect;5 mapping table.</strong> Every block type the spec calls
+          out has a corresponding variant; <code>SourceSpan</code> carries the
+          page number the spec asks for.
+        </li>
+        <li>
+          <strong><code>render_html</code> is the right shape</strong> &mdash;
+          warnings are surfaced in a discoverable
+          <code>&lt;section data-conversion-warnings&gt;</code>, page
+          placeholders carry <code>data-page</code> and <code>data-reason</code>,
+          and the title is escaped. Removing the inline stylesheet is the only
+          change required for it to match the spec.
+        </li>
+        <li>
+          <strong>The CLI exists</strong> (<code>src/cli.rs</code> with an
+          <code>interactive</code> sub-module), covering GOAL.md Stage 8.
+        </li>
+        <li>
+          <strong>Fixtures need to grow.</strong> The Stage 16 / spec Goal 16
+          checklist is far ahead of the current
+          <a href="../tests/conversion_fixtures.rs">tests/conversion_fixtures.rs</a>.
+          The Stage 9 note is honest about this; the work simply has not been
+          done yet.
+        </li>
+      </ul>
+    </section>
+
+    <section id="samples">
+      <h2>5. Sample-Level Findings</h2>
+
+      <section id="sample-driver">
+        <h3>5.1 How To Program a Driver</h3>
+        <p>
+          <a href="../input/How To Program a Driver.pdf">Input</a>
+          &rarr;
+          <a href="../output/How To Program a Driver.html">output</a>.
+        </p>
+        <ul>
+          <li>Selectable headings are recovered.</li>
+          <li>The detected URL is wrapped in <code>&lt;a&gt;</code> correctly.</li>
+          <li>Spec-sheet tables are image XObjects &mdash; correctly emitted as a warning.</li>
+          <li>
+            Word boundaries are visibly broken
+            (<code>withoutChangingthe</code>, <code>Pow er</code>,
+            <code>Ichange</code>, <code>programm er</code>). These are the
+            same strings Stage 9 already lists as open and they are the most
+            visible reason to finish Goal 7 properly rather than expanding
+            <code>REPAIRS</code>.
+          </li>
+        </ul>
+      </section>
+
+      <section id="sample-inventronics">
+        <h3>5.2 Inventronics IP Statement</h3>
+        <p>
+          <a href="../input/Inventronics IP Statement 20161122P.PDF">Input</a>
+          &rarr;
+          <a href="../output/Inventronics IP Statement 20161122P.html">output</a>.
+        </p>
+        <ul>
+          <li><code>lang="&#xFFFD;&#xFFFD; E N - U S"</code> &mdash; see &sect;3.3.</li>
+          <li>Title heading lost word breaks (<code>RE:PHILIPSPATENT CLAIMS</code>) &mdash; same Goal 7 issue.</li>
+          <li>Paragraphs are clipped mid-sentence (<em>"&hellip;of others ."</em>).</li>
+          <li>Inline <code>&lt;style&gt;</code> block present &mdash; see &sect;3.1.</li>
+        </ul>
+      </section>
+
+      <section id="sample-installation">
+        <h3>5.3 Installation Guidelines &mdash; Moisture Ingress</h3>
+        <p>
+          <a href="../input/Installation Guidelines - Prevention of Moisture Ingress for Outdoor Applications 2019-9-11 (2).pdf">Input</a>
+          &rarr;
+          <a href="../output/Installation Guidelines - Prevention of Moisture Ingress for Outdoor Applications 2019-9-11 (2).html">output</a>.
+        </p>
+        <ul>
+          <li>11 <code>&lt;h2&gt;</code> elements &mdash; most are paragraph fragments. See &sect;3.5.</li>
+          <li>Bullets are emitted as <code>&lt;p&gt;</code>; list-marker detection misses the glyphs used here.</li>
+          <li>One table is detected, but its header reads
+            <em>"Through - h o les on top cove r of fixture"</em> &mdash; another
+            Goal 7 word-gap failure.</li>
+        </ul>
+      </section>
+
+      <section id="sample-xml-message">
+        <h3>5.4 XML Message for SCT v7</h3>
+        <p>
+          <a href="../input/XML-Message-for-SCT-Version-7.0-February-2013-1.pdf">Input</a>
+          &rarr;
+          <a href="../output/XML-Message-for-SCT-Version-7.html">output</a>.
+        </p>
+        <ul>
+          <li>
+            530 paragraphs, 0 <code>&lt;h1&gt;</code>. The document title is
+            split across five <code>&lt;h2&gt;</code> tags. The PDF's
+            <code>/Info /Title</code> never reaches the HTML title.
+          </li>
+          <li>
+            Table reconstruction on the Change History table is correct,
+            including right-alignment for numeric cells.
+          </li>
+          <li>
+            The XML appendix is correctly collapsed to <code>&lt;pre&gt;&lt;code&gt;</code>
+            by <code>postprocess::collapse_code_blocks</code>. This is the
+            cleanest piece of the post-processing layer.
+          </li>
+          <li>
+            Many TOC dot-leader lines survive as paragraphs
+            (<em>"Introduction.......3"</em>). A TOC detector could either
+            drop these or render them into a proper list.
+          </li>
+        </ul>
+      </section>
+    </section>
+
+    <section id="recommended-order">
+      <h2>6. Recommended Next Steps</h2>
+      <ol>
+        <li>Delete <code>render_default_styles</code> and invert the misleading test in <code>src/html/mod.rs</code>. &lt; 1 hour.</li>
+        <li>Read <code>/Info /Title</code> and decode UTF-16BE / hex strings; reuse the decoder for <code>/Lang</code>. 1&ndash;2 hours.</li>
+        <li>Emit <code>Block::PageBreak</code> between pages in <code>src/pdf/mod.rs::pdf_to_document</code>. &lt; 1 hour.</li>
+        <li>Replace the <code>REPAIRS</code> table and <code>synthetic_message_item_header</code> shim with a real gap classifier in <code>src/pdf/layout.rs</code> driven by <code>FontMetrics::text_width</code>. 1&ndash;2 days.</li>
+        <li>Tighten the heading classifier with isolation, bold-flag, and tagged-role evidence.</li>
+        <li>Walk <code>/StructTreeRoot</code> for tagged-PDF support beyond marked-content roles.</li>
+        <li>Grow fixtures for incremental updates, multi-byte CMaps, ActualText spans, image-only pages, and repeated header/footer detection.</li>
+      </ol>
+    </section>
+
+    <section id="closing">
+      <h2>7. Closing</h2>
+      <p>
+        The bones of a faithful PDF-to-HTML converter are in place. The most
+        impactful single change is the smallest one: stop emitting the inline
+        stylesheet. After that, the priority is finishing Goal 7 properly so
+        that the <code>REPAIRS</code> table can be deleted, followed by real
+        PDF metadata handling so titles and languages survive.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

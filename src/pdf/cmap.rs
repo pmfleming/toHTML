@@ -18,8 +18,9 @@ pub struct CMap {
 impl CMap {
     pub fn parse(bytes: &[u8]) -> Self {
         let mut cmap = Self::default();
+        let mut section = CMapSection::None;
         for line in String::from_utf8_lossy(bytes).lines() {
-            cmap.add_line(line);
+            section = cmap.add_line(line, section);
         }
         cmap
     }
@@ -44,22 +45,39 @@ impl CMap {
         output
     }
 
-    fn add_line(&mut self, line: &str) {
-        if is_cmap_marker(line) {
-            return;
+    fn add_line(&mut self, line: &str, section: CMapSection) -> CMapSection {
+        let (section, payload) = section_payload(line, section);
+
+        match section {
+            CMapSection::BfChar => self.add_bfchar_mappings(payload),
+            CMapSection::BfRange => self.add_bfrange_mappings(payload),
+            CMapSection::None => {}
         }
 
-        match hex_tokens(line).as_slice() {
-            [source, target] => self.add_mapping(source.clone(), unicode_string(target)),
-            tokens @ [_, _, _, ..] if line.contains('[') => self.add_array_range(tokens),
-            [start, end, target, ..] => self.add_range(start, end, target),
-            _ => {}
-        }
+        end_section(line).unwrap_or(section)
     }
 
     fn add_mapping(&mut self, source: Vec<u8>, target: String) {
         self.max_code_len = self.max_code_len.max(source.len());
         self.entries.insert(source, target);
+    }
+
+    fn add_bfchar_mappings(&mut self, line: &str) {
+        for pair in hex_tokens(line).chunks_exact(2) {
+            self.add_mapping(pair[0].clone(), unicode_string(&pair[1]));
+        }
+    }
+
+    fn add_bfrange_mappings(&mut self, line: &str) {
+        let tokens = hex_tokens(line);
+        if line.contains('[') {
+            self.add_array_range(&tokens);
+            return;
+        }
+
+        for range in tokens.chunks_exact(3) {
+            self.add_range(&range[0], &range[1], &range[2]);
+        }
     }
 
     fn add_range(&mut self, start: &[u8], end: &[u8], target: &[u8]) {
@@ -109,6 +127,13 @@ impl CMap {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CMapSection {
+    None,
+    BfChar,
+    BfRange,
+}
+
 pub fn font_cmaps(bytes: &[u8]) -> Result<HashMap<String, CMap>, crate::ConvertError> {
     font_refs::font_cmaps(bytes)
 }
@@ -123,9 +148,16 @@ fn range_len(start: u32, end: u32) -> usize {
     end.saturating_sub(start).saturating_add(1) as usize
 }
 
-fn is_cmap_marker(line: &str) -> bool {
-    line.contains("beginbfchar")
-        || line.contains("endbfchar")
-        || line.contains("beginbfrange")
-        || line.contains("endbfrange")
+fn section_payload(line: &str, section: CMapSection) -> (CMapSection, &str) {
+    if let Some(start) = line.find("beginbfchar") {
+        return (CMapSection::BfChar, &line[start + "beginbfchar".len()..]);
+    }
+    if let Some(start) = line.find("beginbfrange") {
+        return (CMapSection::BfRange, &line[start + "beginbfrange".len()..]);
+    }
+    (section, line)
+}
+
+fn end_section(line: &str) -> Option<CMapSection> {
+    (line.contains("endbfchar") || line.contains("endbfrange")).then_some(CMapSection::None)
 }

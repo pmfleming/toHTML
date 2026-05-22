@@ -27,6 +27,7 @@ pub struct DocumentMetadata {
     pub title: Option<String>,
     pub source_format: Option<SourceFormat>,
     pub language: Option<String>,
+    pub visual_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

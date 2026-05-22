@@ -113,6 +113,138 @@ endobj
     assert!(html.contains("<h1>Semantic Heading</h1>"));
 }
 
+#[test]
+fn pdf_fixture_uses_struct_tree_role_when_bdc_tag_is_generic() {
+    let pdf = br#"%PDF-1.4
+1 0 obj << /Type /Catalog /StructTreeRoot 5 0 R /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj
+4 0 obj << /Length 80 >>
+stream
+BT /Span << /MCID 0 >> BDC /F1 16 Tf 72 720 Td (Promoted Heading) Tj EMC ET
+endstream
+endobj
+5 0 obj << /Type /StructTreeRoot /K 6 0 R >> endobj
+6 0 obj << /Type /StructElem /S /H1 /K [0] >> endobj
+%%EOF"#;
+
+    let html = render_html(&pdf_to_document(pdf).unwrap());
+
+    assert!(
+        html.contains("<h1>Promoted Heading</h1>"),
+        "html was: {html}"
+    );
+}
+
+#[test]
+fn pdf_fixture_prefers_latest_object_revision_from_incremental_update() {
+    let pdf = br#"%PDF-1.4
+1 0 obj << /Type /Page /Contents 2 0 R >> endobj
+2 0 obj << /Length 40 >>
+stream
+BT /F1 12 Tf 72 720 Td (Old text) Tj ET
+endstream
+endobj
+2 0 obj << /Length 40 >>
+stream
+BT /F1 12 Tf 72 720 Td (New text) Tj ET
+endstream
+endobj
+%%EOF"#;
+
+    let html = render_html(&pdf_to_document(pdf).unwrap());
+
+    assert!(html.contains("New text"), "html was: {html}");
+    assert!(!html.contains("Old text"));
+}
+
+#[test]
+fn pdf_fixture_decodes_multi_byte_to_unicode_cmap() {
+    let content = b"BT /F1 12 Tf 72 720 Td <000100020003> Tj ET";
+    let cmap = b"beginbfchar\n<0001> <0048>\n<0002> <0069>\n<0003> <0021>\nendbfchar\n";
+    let mut pdf = Vec::new();
+    write!(
+        pdf,
+        "%PDF-1.4\n\
+1 0 obj << /Type /Page /Contents 2 0 R /Resources << /Font << /F1 3 0 R >> >> >> endobj\n\
+2 0 obj << /Length {content_len} >>\nstream\n",
+        content_len = content.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(content);
+    write!(
+        pdf,
+        "\nendstream\nendobj\n\
+3 0 obj << /Type /Font /Subtype /Type0 /ToUnicode 4 0 R >> endobj\n\
+4 0 obj << /Length {cmap_len} >>\nstream\n",
+        cmap_len = cmap.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(cmap);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF");
+
+    let html = render_html(&pdf_to_document(&pdf).unwrap());
+
+    assert!(html.contains("Hi!"), "html was: {html}");
+}
+
+#[test]
+fn pdf_fixture_warns_for_image_only_page() {
+    let pdf = br#"%PDF-1.4
+1 0 obj << /Type /Page /Contents 2 0 R /Resources << /XObject << /Im0 3 0 R >> >> >> endobj
+2 0 obj << /Length 20 >>
+stream
+q 100 0 0 100 0 0 cm /Im0 Do Q
+endstream
+endobj
+3 0 obj << /Type /XObject /Subtype /Image /Width 100 /Height 100 >> endobj
+%%EOF"#;
+
+    let document = pdf_to_document(pdf).unwrap();
+    let html = render_html(&document);
+
+    assert!(html.contains("data-page-placeholder"), "html was: {html}");
+    assert!(document
+        .warnings
+        .iter()
+        .any(|warning| warning.message.contains("image content")));
+}
+
+#[test]
+fn pdf_fixture_removes_repeated_page_header() {
+    let mut pdf = String::from("%PDF-1.4\n");
+    pdf.push_str("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+    pdf.push_str("2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R 7 0 R 9 0 R] /Count 4 >> endobj\n");
+    // Four pages, each with the same running header at top and unique body below.
+    let mut object_id = 3;
+    for body in ["Body One", "Body Two", "Body Three", "Body Four"] {
+        pdf.push_str(&format!(
+            "{object_id} 0 obj << /Type /Page /Parent 2 0 R /Contents {} 0 R >> endobj\n",
+            object_id + 1
+        ));
+        let stream = format!("BT /F1 12 Tf 72 760 Td (Repeated Header) Tj 0 -40 Td ({body}) Tj ET");
+        pdf.push_str(&format!(
+            "{} 0 obj << /Length {} >>\nstream\n{}\nendstream\nendobj\n",
+            object_id + 1,
+            stream.len(),
+            stream
+        ));
+        object_id += 2;
+    }
+    pdf.push_str("%%EOF");
+
+    let document = pdf_to_document(pdf.as_bytes()).unwrap();
+    let html = render_html(&document);
+    let header_count = html.matches("Repeated Header").count();
+
+    assert!(
+        header_count <= 1,
+        "header should be removed; html was: {html}"
+    );
+    assert!(html.contains("Body One"));
+    assert!(html.contains("Body Four"));
+}
+
 fn assert_contains_all(haystack: &str, needles: &[&str]) {
     for needle in needles {
         assert!(

@@ -51,6 +51,7 @@ pub struct TextLine {
     pub x: f32,
     pub y: f32,
     pub font_size: f32,
+    pub rotation: f32,
     pub role: Option<String>,
 }
 
@@ -63,7 +64,7 @@ fn group_lines(segments: Vec<TextSegment>) -> Vec<Vec<TextSegment>> {
     for segment in segments {
         match lines
             .iter_mut()
-            .find(|line| same_line(line_y(line), segment.y))
+            .find(|line| same_line(line_y(line), segment.y) && same_rotation(line, &segment))
         {
             Some(line) => line.push(segment),
             None => lines.push(vec![segment]),
@@ -81,12 +82,14 @@ fn to_text_line(mut cells: Vec<TextSegment>) -> TextLine {
         .map(|cell| cell.font_size)
         .fold(0.0_f32, f32::max);
     let role = cells.iter().find_map(|cell| cell.role.clone());
+    let rotation = cells.first().map(|cell| cell.rotation).unwrap_or_default();
     TextLine {
         text: join_line_segments(&cells),
         cells,
         x,
         y,
         font_size,
+        rotation,
         role,
     }
 }
@@ -99,21 +102,38 @@ fn same_line(left: f32, right: f32) -> bool {
     (left - right).abs() <= 3.0
 }
 
+fn same_rotation(line: &[TextSegment], segment: &TextSegment) -> bool {
+    line.first().is_none_or(|first| {
+        (rotation_bucket(first.rotation) - rotation_bucket(segment.rotation)).abs() <= 1
+    })
+}
+
+fn rotation_bucket(rotation: f32) -> i32 {
+    (rotation / 15.0).round() as i32
+}
+
 fn join_line_segments(segments: &[TextSegment]) -> String {
     let mut text = String::new();
     let mut previous_end = None;
+    let mut previous_font = 0.0_f32;
     for segment in segments {
         if let Some(end) = previous_end {
-            push_gap(&mut text, segment.x - end);
+            push_gap(
+                &mut text,
+                segment.x - end,
+                previous_font.max(segment.font_size),
+            );
         }
         text.push_str(&segment.text);
         previous_end = Some(segment.x + segment.width);
+        previous_font = segment.font_size;
     }
     normalize_whitespace(&text)
 }
 
-fn push_gap(text: &mut String, gap: f32) {
-    if gap > 6.0 && !text.ends_with(' ') {
+fn push_gap(text: &mut String, gap: f32, font_size: f32) {
+    let space_width = (font_size * 0.25).max(2.0);
+    if gap >= space_width && !text.ends_with(' ') {
         text.push(' ');
     }
 }
