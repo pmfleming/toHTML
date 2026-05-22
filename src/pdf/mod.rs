@@ -2,6 +2,8 @@ mod cmap;
 mod fonts;
 mod hex;
 mod layout;
+#[cfg(test)]
+mod layout_tests;
 mod object;
 mod postprocess;
 mod streams;
