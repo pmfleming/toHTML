@@ -18,12 +18,30 @@ pub fn text_lines(segments: &[TextSegment]) -> Vec<TextLine> {
             .total_cmp(&left.y)
             .then_with(|| left.x.total_cmp(&right.x))
     });
+    let segments = dedupe_overlapping_segments(segments);
 
     group_lines(segments)
         .into_iter()
         .map(to_text_line)
         .filter(|line| !line.text.is_empty())
         .collect()
+}
+
+fn dedupe_overlapping_segments(segments: Vec<TextSegment>) -> Vec<TextSegment> {
+    let mut unique = Vec::new();
+    for segment in segments {
+        if !unique
+            .iter()
+            .any(|existing| duplicate_segment(existing, &segment))
+        {
+            unique.push(segment);
+        }
+    }
+    unique
+}
+
+fn duplicate_segment(left: &TextSegment, right: &TextSegment) -> bool {
+    left.text == right.text && (left.x - right.x).abs() <= 1.0 && (left.y - right.y).abs() <= 1.0
 }
 
 #[derive(Debug, Clone, PartialEq)]

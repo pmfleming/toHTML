@@ -150,7 +150,7 @@ impl<'a> TextParser<'a> {
         let replacement = self.current_actual_text();
         let decoded = replacement.as_ref().unwrap_or(decoded);
         let text = normalize_whitespace(&decoded.text);
-        if is_readable_text(&text) && self.state.is_visible_text() {
+        if is_readable_text(&text) && self.state.is_visible_text() && !self.in_artifact() {
             let width = self.current_metrics().map(|metrics| {
                 metrics.text_width(&decoded.raw, self.state.font_size(), text.chars().count())
             });
@@ -362,6 +362,12 @@ impl<'a> TextParser<'a> {
 
     fn current_actual_text(&self) -> Option<DecodedText> {
         self.actual_text_stack.last().cloned().flatten()
+    }
+
+    fn in_artifact(&self) -> bool {
+        self.marked_roles
+            .last()
+            .is_some_and(|role| role == "Artifact")
     }
 }
 

@@ -374,6 +374,18 @@ mod tests {
         assert_eq!(heading.level, 1);
     }
 
+    #[test]
+    fn deduplicates_overlapping_text_segments() {
+        let segments = vec![segment("Body", 10.0, 100.0), segment("Body", 10.5, 100.2)];
+
+        let blocks = blocks_from_segments(&segments);
+
+        let Block::Paragraph(paragraph) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(paragraph.content, vec![Inline::Text("Body".to_string())]);
+    }
+
     fn segment(text: &str, x: f32, y: f32) -> TextSegment {
         TextSegment {
             text: text.to_string(),

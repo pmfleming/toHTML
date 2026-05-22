@@ -115,3 +115,10 @@ fn uses_actual_text_for_marked_content() {
 
     assert_eq!(extract_text(stream).as_deref(), Some("replacement"));
 }
+
+#[test]
+fn skips_artifact_marked_content() {
+    let stream = b"BT /Artifact BMC (Page 1) Tj EMC (Body) Tj ET";
+
+    assert_eq!(extract_text(stream).as_deref(), Some("Body"));
+}
