@@ -1,5 +1,6 @@
 use std::io::{Cursor, Write};
 
+use flate2::{write::ZlibEncoder, Compression};
 use tohtml::{docx_to_document, markdown_to_document, pdf_to_document, render_html};
 use zip::write::SimpleFileOptions;
 
@@ -77,6 +78,41 @@ fn pdf_fixture_renders_placeholder_for_non_extractable_page() {
     );
 }
 
+#[test]
+fn pdf_fixture_decodes_flate_streams() {
+    let content = b"BT /F1 12 Tf 72 720 Td (Compressed PDF) Tj ET";
+    let compressed = flate_bytes(content);
+    let mut pdf = Vec::new();
+    write!(
+        pdf,
+        "%PDF-1.4\n1 0 obj << /Type /Page /Contents 2 0 R >> endobj\n2 0 obj << /Length {} /Filter /FlateDecode >>\nstream\n",
+        compressed.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(&compressed);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF");
+
+    let html = render_html(&pdf_to_document(&pdf).unwrap());
+
+    assert!(html.contains("Compressed PDF"));
+}
+
+#[test]
+fn pdf_fixture_renders_tagged_actual_text_heading() {
+    let pdf = br#"%PDF-1.4
+1 0 obj << /Type /Page /Contents 2 0 R >> endobj
+2 0 obj << /Length 92 >>
+stream
+BT /H1 << /ActualText (Semantic Heading) >> BDC (xxxx) Tj EMC ET
+endstream
+endobj
+%%EOF"#;
+
+    let html = render_html(&pdf_to_document(pdf).unwrap());
+
+    assert!(html.contains("<h1>Semantic Heading</h1>"));
+}
+
 fn assert_contains_all(haystack: &str, needles: &[&str]) {
     for needle in needles {
         assert!(
@@ -101,6 +137,12 @@ fn docx_fixture() -> Vec<u8> {
         zip.finish().unwrap();
     }
     bytes.into_inner()
+}
+
+fn flate_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
 }
 
 fn document_xml() -> &'static str {
