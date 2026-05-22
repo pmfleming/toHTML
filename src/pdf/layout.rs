@@ -1,4 +1,4 @@
-use crate::{Block, Inline, Paragraph, Table, TableCell, TableRow};
+use crate::{Block, Heading, Inline, List, ListItem, Paragraph, Table, TableCell, TableRow};
 
 use super::text::{text_lines, TextLine, TextSegment};
 
@@ -11,6 +11,12 @@ pub fn blocks_from_segments(segments: &[TextSegment]) -> Vec<Block> {
         if let Some((table, consumed)) = parse_table(&lines[index..]) {
             blocks.push(Block::Table(table));
             index += consumed;
+        } else if let Some((list, consumed)) = parse_list(&lines[index..]) {
+            blocks.push(Block::List(list));
+            index += consumed;
+        } else if heading_line(&lines, index) {
+            blocks.push(heading(&lines[index]));
+            index += 1;
         } else {
             let (text, consumed) = parse_paragraph(&lines[index..]);
             blocks.push(paragraph(&text));
@@ -27,7 +33,7 @@ fn parse_paragraph(lines: &[TextLine]) -> (String, usize) {
 
     for line in lines.iter().skip(1) {
         let previous = &lines[consumed - 1];
-        if tabular_line(line) || !paragraph_continuation(previous, line) {
+        if tabular_line(line) || is_list_line(line) || !paragraph_continuation(previous, line) {
             break;
         }
         push_paragraph_line(&mut text, &line.text);
@@ -35,6 +41,97 @@ fn parse_paragraph(lines: &[TextLine]) -> (String, usize) {
     }
 
     (text, consumed)
+}
+
+fn parse_list(lines: &[TextLine]) -> Option<(List, usize)> {
+    let first = list_marker(&lines[0])?;
+    let mut items = Vec::new();
+    let mut consumed = 0;
+
+    for line in lines {
+        let Some(marker) = list_marker(line) else {
+            break;
+        };
+        if marker.ordered != first.ordered {
+            break;
+        }
+        items.push(ListItem {
+            checked: None,
+            blocks: vec![paragraph(marker.text)],
+            source: None,
+        });
+        consumed += 1;
+    }
+
+    (items.len() >= 2).then_some((
+        List {
+            ordered: first.ordered,
+            start: first.start,
+            items,
+            source: None,
+        },
+        consumed,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ListMarker<'a> {
+    ordered: bool,
+    start: Option<u64>,
+    text: &'a str,
+}
+
+fn list_marker(line: &TextLine) -> Option<ListMarker<'_>> {
+    unordered_marker(&line.text).or_else(|| ordered_marker(&line.text))
+}
+
+fn unordered_marker(text: &str) -> Option<ListMarker<'_>> {
+    let text = text.trim_start();
+    for marker in ["- ", "* ", "+ ", "• "] {
+        if let Some(item) = text.strip_prefix(marker) {
+            return Some(ListMarker {
+                ordered: false,
+                start: None,
+                text: item.trim(),
+            });
+        }
+    }
+    None
+}
+
+fn ordered_marker(text: &str) -> Option<ListMarker<'_>> {
+    let text = text.trim_start();
+    let marker_end = text.find(|ch: char| !(ch.is_ascii_digit()))?;
+    let marker = &text[..marker_end];
+    let rest = text[marker_end..].trim_start();
+    if marker.is_empty() || !matches!(rest.chars().next(), Some('.' | ')')) {
+        return None;
+    }
+    Some(ListMarker {
+        ordered: true,
+        start: marker.parse().ok(),
+        text: rest[1..].trim_start(),
+    })
+}
+
+fn is_list_line(line: &TextLine) -> bool {
+    list_marker(line).is_some()
+}
+
+fn heading_line(lines: &[TextLine], index: usize) -> bool {
+    let line = &lines[index];
+    if line.text.len() > 120 || line.text.ends_with('.') || line.text.contains("  ") {
+        return false;
+    }
+    let body_size = median_font_size(lines);
+    line.font_size >= body_size * 1.25
+}
+
+fn median_font_size(lines: &[TextLine]) -> f32 {
+    let mut sizes: Vec<f32> = lines.iter().map(|line| line.font_size).collect();
+    sizes.sort_by(f32::total_cmp);
+    let index = sizes.len().saturating_sub(1) / 2;
+    sizes.get(index).copied().unwrap_or(12.0).max(1.0)
 }
 
 fn paragraph_continuation(previous: &TextLine, candidate: &TextLine) -> bool {
@@ -120,6 +217,14 @@ fn paragraph(text: &str) -> Block {
     })
 }
 
+fn heading(line: &TextLine) -> Block {
+    Block::Heading(Heading {
+        level: 2,
+        content: vec![Inline::Text(line.text.clone())],
+        source: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +282,35 @@ mod tests {
                 "This is the first line and this continues it.".to_string()
             )]
         );
+    }
+
+    #[test]
+    fn infers_unordered_lists_from_markers() {
+        let segments = vec![
+            segment("- Alpha", 10.0, 100.0),
+            segment("- Beta", 10.0, 86.0),
+        ];
+
+        let blocks = blocks_from_segments(&segments);
+
+        let Block::List(list) = &blocks[0] else {
+            panic!("expected list");
+        };
+        assert!(!list.ordered);
+        assert_eq!(list.items.len(), 2);
+    }
+
+    #[test]
+    fn infers_large_text_heading() {
+        let segments = vec![
+            TextSegment::new("Overview".to_string(), 10.0, 120.0, 18.0, 70.0),
+            segment("Body text continues here.", 10.0, 96.0),
+        ];
+
+        let blocks = blocks_from_segments(&segments);
+
+        assert!(matches!(blocks[0], Block::Heading(_)));
+        assert!(matches!(blocks[1], Block::Paragraph(_)));
     }
 
     fn segment(text: &str, x: f32, y: f32) -> TextSegment {
