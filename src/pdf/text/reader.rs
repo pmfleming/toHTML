@@ -6,6 +6,7 @@ pub(super) enum Token {
     Array(Vec<ArrayToken>),
     Hex(Vec<u8>),
     Name(String),
+    ActualText(Vec<u8>),
     Word(String),
 }
 
@@ -30,10 +31,10 @@ impl<'a> Reader<'a> {
         match self.current()? {
             b'(' => Some(Token::Literal(self.literal_string())),
             b'[' => Some(Token::Array(self.array())),
-            b'<' if self.peek() == Some(b'<') => {
-                self.skip_dictionary();
-                self.next_token()
-            }
+            b'<' if self.peek() == Some(b'<') => self
+                .dictionary_actual_text()
+                .map(Token::ActualText)
+                .or_else(|| self.next_token()),
             b'<' => Some(Token::Hex(self.hex_string())),
             b'/' => Some(Token::Name(self.name())),
             _ => self.word().map(Token::Word),
@@ -67,7 +68,9 @@ impl<'a> Reader<'a> {
             match self.current() {
                 Some(b']') => break,
                 Some(b'(') => items.push(ArrayToken::Text(self.literal_string())),
-                Some(b'<') if self.peek() == Some(b'<') => self.skip_dictionary(),
+                Some(b'<') if self.peek() == Some(b'<') => {
+                    self.dictionary_actual_text();
+                }
                 Some(b'<') => items.push(ArrayToken::Text(self.hex_string())),
                 Some(b'/') => {
                     self.name();
@@ -181,15 +184,38 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn skip_dictionary(&mut self) {
+    fn dictionary_actual_text(&mut self) -> Option<Vec<u8>> {
         self.index += 2;
         let mut depth = 1;
+        let mut actual_text = None;
         while self.index + 1 < self.bytes.len() && depth > 0 {
             match (self.current(), self.peek()) {
                 (Some(b'<'), Some(b'<')) => self.enter_dictionary(&mut depth),
                 (Some(b'>'), Some(b'>')) => self.exit_dictionary(&mut depth),
+                (Some(b'/'), _) if self.name_at_current() == "ActualText" => {
+                    actual_text = self.read_actual_text_value();
+                }
                 _ => self.index += 1,
             }
+        }
+        actual_text
+    }
+
+    fn name_at_current(&self) -> String {
+        let mut index = self.index + 1;
+        while index < self.bytes.len() && !is_delimiter(self.bytes[index]) {
+            index += 1;
+        }
+        String::from_utf8_lossy(&self.bytes[self.index + 1..index]).to_string()
+    }
+
+    fn read_actual_text_value(&mut self) -> Option<Vec<u8>> {
+        self.name();
+        self.skip_ignored();
+        match self.current()? {
+            b'(' => Some(self.literal_string()),
+            b'<' if self.peek() != Some(b'<') => Some(self.hex_string()),
+            _ => None,
         }
     }
 

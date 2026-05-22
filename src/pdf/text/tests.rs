@@ -108,3 +108,10 @@ fn preserves_marked_content_role_on_segments() {
 
     assert_eq!(segments[0].role.as_deref(), Some("H1"));
 }
+
+#[test]
+fn uses_actual_text_for_marked_content() {
+    let stream = b"BT /Span << /ActualText (replacement) >> BDC (xxxxx) Tj EMC ET";
+
+    assert_eq!(extract_text(stream).as_deref(), Some("replacement"));
+}

@@ -22,6 +22,7 @@ pub fn extract_segments_with_fonts(
 enum Operand {
     Name(String),
     Text(DecodedText),
+    ActualText(DecodedText),
     TextArray(Vec<TextArrayItem>),
     Number(f32),
 }
@@ -45,6 +46,7 @@ struct TextParser<'a> {
     state: TextState,
     state_stack: Vec<TextState>,
     marked_roles: Vec<String>,
+    actual_text_stack: Vec<Option<DecodedText>>,
     font_cmaps: &'a HashMap<String, CMap>,
     font_metrics: &'a HashMap<String, FontMetrics>,
 }
@@ -62,6 +64,7 @@ impl<'a> TextParser<'a> {
             state: TextState::default(),
             state_stack: Vec::new(),
             marked_roles: Vec::new(),
+            actual_text_stack: Vec::new(),
             font_cmaps,
             font_metrics,
         }
@@ -84,6 +87,10 @@ impl<'a> TextParser<'a> {
                 self.operands.push(Operand::TextArray(items));
             }
             Token::Name(name) => self.operands.push(Operand::Name(name)),
+            Token::ActualText(bytes) => {
+                let text = self.decode_text(bytes);
+                self.operands.push(Operand::ActualText(text));
+            }
             Token::Word(word) => self.apply_word(&word),
         }
     }
@@ -140,6 +147,8 @@ impl<'a> TextParser<'a> {
     }
 
     fn push_decoded_segment(&mut self, decoded: &DecodedText) {
+        let replacement = self.current_actual_text();
+        let decoded = replacement.as_ref().unwrap_or(decoded);
         let text = normalize_whitespace(&decoded.text);
         if is_readable_text(&text) && self.state.is_visible_text() {
             let width = self.current_metrics().map(|metrics| {
@@ -187,11 +196,13 @@ impl<'a> TextParser<'a> {
     fn begin_marked_content(&mut self) {
         if let Some(role) = self.latest_name() {
             self.marked_roles.push(role);
+            self.actual_text_stack.push(self.latest_actual_text());
         }
     }
 
     fn end_marked_content(&mut self) {
         self.marked_roles.pop();
+        self.actual_text_stack.pop();
     }
 
     fn apply_font(&mut self) {
@@ -317,6 +328,16 @@ impl<'a> TextParser<'a> {
             })
     }
 
+    fn latest_actual_text(&self) -> Option<DecodedText> {
+        self.operands
+            .iter()
+            .rev()
+            .find_map(|operand| match operand {
+                Operand::ActualText(text) => Some(text.clone()),
+                _ => None,
+            })
+    }
+
     fn decode_text(&self, bytes: Vec<u8>) -> DecodedText {
         let text = self
             .state
@@ -337,6 +358,10 @@ impl<'a> TextParser<'a> {
 
     fn current_role(&self) -> Option<String> {
         self.marked_roles.last().cloned()
+    }
+
+    fn current_actual_text(&self) -> Option<DecodedText> {
+        self.actual_text_stack.last().cloned().flatten()
     }
 }
 

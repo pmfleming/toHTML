@@ -17,6 +17,7 @@ pub fn pdf_to_document(bytes: &[u8]) -> Result<Document, ConvertError> {
     let font_metrics = fonts::font_metrics(bytes);
     let mut document = Document::new();
     document.metadata.source_format = Some(SourceFormat::Pdf);
+    document.metadata.language = document_language(bytes);
     document.warnings.extend(
         extraction
             .warnings
@@ -78,6 +79,11 @@ fn apply_detected_links(document: &mut Document, bytes: &[u8]) {
             });
         }
     }
+}
+
+fn document_language(bytes: &[u8]) -> Option<String> {
+    let marker = find_bytes(bytes, b"/Lang", 0)? + b"/Lang".len();
+    literal_after(bytes, marker)
 }
 
 fn link_uri_in_blocks(blocks: &mut [Block], uri: &str) -> bool {
@@ -254,5 +260,22 @@ endobj
         let html = crate::render_html(&document);
 
         assert!(html.contains("<a href=\"https://example.test\">https://example.test</a>"));
+    }
+
+    #[test]
+    fn preserves_catalog_language() {
+        let pdf = br#"%PDF-1.4
+1 0 obj << /Type /Catalog /Lang (nl-NL) >> endobj
+2 0 obj << /Type /Page /Contents 3 0 R >> endobj
+3 0 obj << /Length 42 >>
+stream
+BT /F1 12 Tf 72 720 Td (Hallo) Tj ET
+endstream
+endobj
+%%EOF"#;
+
+        let document = pdf_to_document(pdf).unwrap();
+
+        assert_eq!(document.metadata.language.as_deref(), Some("nl-NL"));
     }
 }
