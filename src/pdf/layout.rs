@@ -1,4 +1,6 @@
-use crate::{Block, Heading, Inline, List, ListItem, Paragraph, Table, TableCell, TableRow};
+use crate::{
+    Block, Heading, Inline, List, ListItem, Paragraph, Table, TableAlignment, TableCell, TableRow,
+};
 
 use super::text::{text_lines, TextLine, TextSegment};
 
@@ -202,12 +204,23 @@ fn table_row(line: &TextLine, header: bool) -> TableRow {
                 header,
                 colspan: 1,
                 rowspan: 1,
-                align: None,
+                align: table_alignment(&cell.text),
                 source: None,
             })
             .collect(),
         source: None,
     }
+}
+
+fn table_alignment(text: &str) -> Option<TableAlignment> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let numeric = text
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | ',' | '%' | '+' | '-' | ' '));
+    numeric.then_some(TableAlignment::Right)
 }
 
 fn paragraph(text: &str) -> Block {
@@ -249,6 +262,23 @@ mod tests {
             table.rows[1].cells[1].content,
             vec![Inline::Text("700mA".to_string())]
         );
+    }
+
+    #[test]
+    fn marks_numeric_table_cells_as_right_aligned() {
+        let segments = vec![
+            segment("Name", 10.0, 100.0),
+            segment("Count", 120.0, 100.0),
+            segment("A", 10.0, 84.0),
+            segment("300", 120.0, 84.0),
+        ];
+
+        let blocks = blocks_from_segments(&segments);
+
+        let Block::Table(table) = &blocks[0] else {
+            panic!("expected table");
+        };
+        assert_eq!(table.rows[1].cells[1].align, Some(TableAlignment::Right));
     }
 
     #[test]
