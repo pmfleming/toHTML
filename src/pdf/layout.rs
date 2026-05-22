@@ -19,6 +19,9 @@ pub fn blocks_from_segments(segments: &[TextSegment]) -> Vec<Block> {
         } else if heading_line(&lines, index) {
             blocks.push(heading(&lines[index]));
             index += 1;
+        } else if semantic_inline_line(&lines[index]) {
+            blocks.push(paragraph_from_line(&lines[index]));
+            index += 1;
         } else {
             let (text, consumed) = parse_paragraph(&lines[index..]);
             blocks.push(paragraph(&text));
@@ -233,6 +236,25 @@ fn paragraph(text: &str) -> Block {
     })
 }
 
+fn paragraph_from_line(line: &TextLine) -> Block {
+    Block::Paragraph(Paragraph {
+        content: vec![semantic_inline(&line.text, line.role.as_deref())],
+        source: None,
+    })
+}
+
+fn semantic_inline(text: &str, role: Option<&str>) -> Inline {
+    match role {
+        Some("Strong") => Inline::Strong(vec![Inline::Text(text.to_string())]),
+        Some("Em") => Inline::Emphasis(vec![Inline::Text(text.to_string())]),
+        _ => Inline::Text(text.to_string()),
+    }
+}
+
+fn semantic_inline_line(line: &TextLine) -> bool {
+    matches!(line.role.as_deref(), Some("Strong" | "Em"))
+}
+
 fn heading(line: &TextLine) -> Block {
     Block::Heading(Heading {
         level: tagged_heading_level(line).unwrap_or(2),
@@ -384,6 +406,21 @@ mod tests {
             panic!("expected paragraph");
         };
         assert_eq!(paragraph.content, vec![Inline::Text("Body".to_string())]);
+    }
+
+    #[test]
+    fn maps_tagged_inline_emphasis() {
+        let segments = vec![
+            TextSegment::new("Important".to_string(), 10.0, 120.0, 12.0, 54.0)
+                .with_role(Some("Strong".to_string())),
+        ];
+
+        let blocks = blocks_from_segments(&segments);
+
+        let Block::Paragraph(paragraph) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert!(matches!(paragraph.content[0], Inline::Strong(_)));
     }
 
     fn segment(text: &str, x: f32, y: f32) -> TextSegment {
