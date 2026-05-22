@@ -38,6 +38,13 @@ fn decodes_hex_text_operands() {
 }
 
 #[test]
+fn decodes_pdf_doc_encoding_fallback_bytes() {
+    let stream = b"BT (A\x93B\x94) Tj ET";
+
+    assert_eq!(extract_text(stream).as_deref(), Some("AﬁBﬂ"));
+}
+
+#[test]
 fn joins_nearby_segments_without_forcing_word_breaks() {
     let stream = b"BT 1 0 0 1 10 100 Tm (def) Tj 1 0 Td (ault) Tj ET";
 
