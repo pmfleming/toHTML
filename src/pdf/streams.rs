@@ -336,6 +336,14 @@ fn document_warnings(bytes: &[u8], objects: &PdfObjects, pages: &[PageContent]) 
         warnings
             .push("PDF uses cross-reference streams; object stream support is limited".to_string());
     }
+    if objects
+        .values()
+        .any(|object| object.type_name() == Some("ObjStm"))
+    {
+        warnings.push(
+            "PDF uses object streams; compressed object extraction may be incomplete".to_string(),
+        );
+    }
     for page in pages.iter().filter(|page| page.streams.is_empty()) {
         warnings.push(format!(
             "Page {} has no supported extractable content stream",

@@ -278,4 +278,19 @@ endobj
 
         assert_eq!(document.metadata.language.as_deref(), Some("nl-NL"));
     }
+
+    #[test]
+    fn reports_encryption_as_extraction_risk() {
+        let pdf = br#"%PDF-1.4
+trailer << /Encrypt 4 0 R >>
+1 0 obj << /Type /Page >> endobj
+%%EOF"#;
+
+        let document = pdf_to_document(pdf).unwrap();
+
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("encryption")));
+    }
 }
