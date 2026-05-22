@@ -1,6 +1,7 @@
-use crate::{Inline, SourceFormat, SourceSpan, Table, TableAlignment, TableCell, TableRow};
+use crate::{Inline, Table, TableAlignment, TableCell, TableRow};
 
 use super::inlines::parse_inlines;
+use super::source::markdown_source;
 
 pub fn table_start(lines: &[&str], index: usize) -> bool {
     let Some(header) = lines.get(index) else {
@@ -92,13 +93,4 @@ fn alignment(cell: &str) -> Option<TableAlignment> {
         (false, true) => Some(TableAlignment::Right),
         (false, false) => None,
     }
-}
-
-fn markdown_source() -> Option<SourceSpan> {
-    Some(SourceSpan {
-        format: SourceFormat::Markdown,
-        page: None,
-        path: None,
-        byte_range: None,
-    })
 }

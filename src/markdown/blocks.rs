@@ -1,8 +1,11 @@
-use crate::{
-    Block, BlockQuote, CodeBlock, Heading, List, ListItem, Paragraph, SourceFormat, SourceSpan,
-};
+use crate::{Block, BlockQuote, CodeBlock, List, Paragraph};
 
+use super::block_markers::{
+    fence_start, horizontal_rule, parse_heading, quote_start, strip_quote_marker,
+};
 use super::inlines::parse_inlines;
+use super::lists::{parse_list_item, ParsedListItem};
+use super::source::markdown_source;
 use super::tables::{parse_table, table_start};
 
 pub fn parse_blocks(input: &str) -> Vec<Block> {
@@ -145,137 +148,6 @@ impl BlockParser<'_> {
     }
 }
 
-fn parse_heading(line: &str) -> Option<Block> {
-    let trimmed = line.trim_start();
-    let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if !(1..=6).contains(&level) || !trimmed[level..].starts_with(' ') {
-        return None;
-    }
-
-    Some(Block::Heading(Heading {
-        level: level as u8,
-        content: parse_inlines(trimmed[level..].trim()),
-        source: markdown_source(),
-    }))
-}
-
-fn horizontal_rule(line: &str) -> bool {
-    let trimmed = line.trim();
-    let Some(marker) = trimmed.chars().next() else {
-        return false;
-    };
-    if !matches!(marker, '-' | '*' | '_') {
-        return false;
-    }
-    trimmed.len() >= 3 && trimmed.chars().all(|ch| ch == marker)
-}
-
-fn quote_start(line: &str) -> bool {
-    line.trim_start().starts_with('>')
-}
-
-fn strip_quote_marker(line: &str) -> &str {
-    line.trim_start()
-        .strip_prefix('>')
-        .unwrap_or(line)
-        .strip_prefix(' ')
-        .unwrap_or(line.trim_start().strip_prefix('>').unwrap_or(line))
-}
-
-struct Fence {
-    marker: &'static str,
-    language: Option<String>,
-}
-
-fn fence_start(line: &str) -> Option<Fence> {
-    let trimmed = line.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        return Some(Fence {
-            marker: "```",
-            language: language(rest),
-        });
-    }
-    if let Some(rest) = trimmed.strip_prefix("~~~") {
-        return Some(Fence {
-            marker: "~~~",
-            language: language(rest),
-        });
-    }
-    None
-}
-
-fn language(rest: &str) -> Option<String> {
-    let language = rest.trim();
-    (!language.is_empty()).then(|| language.to_string())
-}
-
-struct ParsedListItem {
-    ordered: bool,
-    number: Option<u64>,
-    checked: Option<bool>,
-    text: String,
-}
-
-impl ParsedListItem {
-    fn into_item(self) -> ListItem {
-        ListItem {
-            checked: self.checked,
-            blocks: vec![Block::Paragraph(Paragraph {
-                content: parse_inlines(&self.text),
-                source: markdown_source(),
-            })],
-            source: markdown_source(),
-        }
-    }
-}
-
-fn parse_list_item(line: &str) -> Option<ParsedListItem> {
-    let trimmed = line.trim_start();
-    parse_unordered_item(trimmed).or_else(|| parse_ordered_item(trimmed))
-}
-
-fn parse_unordered_item(trimmed: &str) -> Option<ParsedListItem> {
-    let marker = trimmed.chars().next()?;
-    if !matches!(marker, '-' | '*' | '+') || !trimmed[1..].starts_with(' ') {
-        return None;
-    }
-    let (checked, text) = parse_task_marker(trimmed[2..].trim_start());
-    Some(ParsedListItem {
-        ordered: false,
-        number: None,
-        checked,
-        text: text.to_string(),
-    })
-}
-
-fn parse_ordered_item(trimmed: &str) -> Option<ParsedListItem> {
-    let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
-    if digits == 0 || !trimmed[digits..].starts_with(". ") {
-        return None;
-    }
-    let number = trimmed[..digits].parse().ok();
-    let (checked, text) = parse_task_marker(trimmed[digits + 2..].trim_start());
-    Some(ParsedListItem {
-        ordered: true,
-        number,
-        checked,
-        text: text.to_string(),
-    })
-}
-
-fn parse_task_marker(text: &str) -> (Option<bool>, &str) {
-    if let Some(rest) = text.strip_prefix("[ ] ") {
-        return (Some(false), rest);
-    }
-    if let Some(rest) = text
-        .strip_prefix("[x] ")
-        .or_else(|| text.strip_prefix("[X] "))
-    {
-        return (Some(true), rest);
-    }
-    (None, text)
-}
-
 fn paragraph_boundary(lines: &[&str], index: usize) -> bool {
     let Some(line) = lines.get(index).copied() else {
         return true;
@@ -287,13 +159,4 @@ fn paragraph_boundary(lines: &[&str], index: usize) -> bool {
         || quote_start(line)
         || parse_list_item(line).is_some()
         || table_start(lines, index)
-}
-
-fn markdown_source() -> Option<SourceSpan> {
-    Some(SourceSpan {
-        format: SourceFormat::Markdown,
-        page: None,
-        path: None,
-        byte_range: None,
-    })
 }
