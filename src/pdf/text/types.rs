@@ -5,6 +5,7 @@ pub struct TextSegment {
     pub y: f32,
     pub font_size: f32,
     pub width: f32,
+    pub role: Option<String>,
 }
 
 impl TextSegment {
@@ -15,6 +16,12 @@ impl TextSegment {
             y,
             font_size,
             width,
+            role: None,
         }
+    }
+
+    pub fn with_role(mut self, role: Option<String>) -> Self {
+        self.role = role;
+        self
     }
 }

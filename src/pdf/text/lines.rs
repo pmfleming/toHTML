@@ -33,6 +33,7 @@ pub struct TextLine {
     pub x: f32,
     pub y: f32,
     pub font_size: f32,
+    pub role: Option<String>,
 }
 
 pub fn estimated_text_width(text: &str, font_size: f32) -> f32 {
@@ -61,12 +62,14 @@ fn to_text_line(mut cells: Vec<TextSegment>) -> TextLine {
         .iter()
         .map(|cell| cell.font_size)
         .fold(0.0_f32, f32::max);
+    let role = cells.iter().find_map(|cell| cell.role.clone());
     TextLine {
         text: join_line_segments(&cells),
         cells,
         x,
         y,
         font_size,
+        role,
     }
 }
 

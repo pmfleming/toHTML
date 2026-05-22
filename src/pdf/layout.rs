@@ -122,6 +122,9 @@ fn is_list_line(line: &TextLine) -> bool {
 
 fn heading_line(lines: &[TextLine], index: usize) -> bool {
     let line = &lines[index];
+    if tagged_heading_level(line).is_some() {
+        return true;
+    }
     if line.text.len() > 120 || line.text.ends_with('.') || line.text.contains("  ") {
         return false;
     }
@@ -232,10 +235,23 @@ fn paragraph(text: &str) -> Block {
 
 fn heading(line: &TextLine) -> Block {
     Block::Heading(Heading {
-        level: 2,
+        level: tagged_heading_level(line).unwrap_or(2),
         content: vec![Inline::Text(line.text.clone())],
         source: None,
     })
+}
+
+fn tagged_heading_level(line: &TextLine) -> Option<u8> {
+    let role = line.role.as_deref()?;
+    match role {
+        "H" | "H1" => Some(1),
+        "H2" => Some(2),
+        "H3" => Some(3),
+        "H4" => Some(4),
+        "H5" => Some(5),
+        "H6" => Some(6),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +359,21 @@ mod tests {
         assert!(matches!(blocks[1], Block::Paragraph(_)));
     }
 
+    #[test]
+    fn uses_tagged_heading_roles() {
+        let segments = vec![
+            TextSegment::new("Tagged".to_string(), 10.0, 120.0, 12.0, 42.0)
+                .with_role(Some("H1".to_string())),
+        ];
+
+        let blocks = blocks_from_segments(&segments);
+
+        let Block::Heading(heading) = &blocks[0] else {
+            panic!("expected heading");
+        };
+        assert_eq!(heading.level, 1);
+    }
+
     fn segment(text: &str, x: f32, y: f32) -> TextSegment {
         TextSegment {
             text: text.to_string(),
@@ -350,6 +381,7 @@ mod tests {
             y,
             font_size: 12.0,
             width: text.len() as f32 * 6.0,
+            role: None,
         }
     }
 }

@@ -99,3 +99,12 @@ fn skips_invisible_text_rendering_modes() {
 
     assert_eq!(extract_text(stream).as_deref(), Some("Visible"));
 }
+
+#[test]
+fn preserves_marked_content_role_on_segments() {
+    let stream = b"BT /H1 << /MCID 0 >> BDC (Tagged Heading) Tj EMC ET";
+
+    let segments = extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new());
+
+    assert_eq!(segments[0].role.as_deref(), Some("H1"));
+}

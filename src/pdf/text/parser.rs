@@ -44,6 +44,7 @@ struct TextParser<'a> {
     segments: Vec<TextSegment>,
     state: TextState,
     state_stack: Vec<TextState>,
+    marked_roles: Vec<String>,
     font_cmaps: &'a HashMap<String, CMap>,
     font_metrics: &'a HashMap<String, FontMetrics>,
 }
@@ -60,6 +61,7 @@ impl<'a> TextParser<'a> {
             segments: Vec::new(),
             state: TextState::default(),
             state_stack: Vec::new(),
+            marked_roles: Vec::new(),
             font_cmaps,
             font_metrics,
         }
@@ -143,7 +145,11 @@ impl<'a> TextParser<'a> {
             let width = self.current_metrics().map(|metrics| {
                 metrics.text_width(&decoded.raw, self.state.font_size(), text.chars().count())
             });
-            self.segments.push(self.state.segment(text, width));
+            self.segments.push(
+                self.state
+                    .segment(text, width)
+                    .with_role(self.current_role()),
+            );
             let segment = self.segments.last().unwrap();
             self.state
                 .advance_text(&segment.text, width.unwrap_or(segment.width));
@@ -153,6 +159,8 @@ impl<'a> TextParser<'a> {
     fn apply_state_operator(&mut self, operator: &str) {
         match operator {
             "BT" => self.state.begin_text_object(),
+            "BMC" | "BDC" => self.begin_marked_content(),
+            "EMC" => self.end_marked_content(),
             "q" => self.state_stack.push(self.state.clone()),
             "Q" => self.restore_graphics_state(),
             "Tf" => self.apply_font(),
@@ -174,6 +182,16 @@ impl<'a> TextParser<'a> {
         if let Some(state) = self.state_stack.pop() {
             self.state = state;
         }
+    }
+
+    fn begin_marked_content(&mut self) {
+        if let Some(role) = self.latest_name() {
+            self.marked_roles.push(role);
+        }
+    }
+
+    fn end_marked_content(&mut self) {
+        self.marked_roles.pop();
     }
 
     fn apply_font(&mut self) {
@@ -315,6 +333,10 @@ impl<'a> TextParser<'a> {
             .font_name
             .as_ref()
             .and_then(|name| self.font_metrics.get(name))
+    }
+
+    fn current_role(&self) -> Option<String> {
+        self.marked_roles.last().cloned()
     }
 }
 
