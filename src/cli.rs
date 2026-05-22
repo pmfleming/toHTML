@@ -1,3 +1,6 @@
+mod assets;
+mod interactive;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,18 +13,77 @@ pub fn run_from_env() -> Result<(), CliError> {
 
 fn run(args: Vec<String>) -> Result<(), CliError> {
     let options = Options::parse(args)?;
-    let input = fs::read(&options.input)?;
-    let format = options
-        .format
-        .or_else(|| Format::from_path(&options.input))
-        .ok_or(CliError::UnknownFormat)?;
-    let html = render_html(&convert(format, &input)?);
+    if options.interactive {
+        return interactive::run();
+    }
 
-    if let Some(output) = options.output {
-        fs::write(output, html)?;
+    let output = options
+        .output
+        .unwrap_or_else(|| default_output_path(&options.input));
+    convert_file(
+        &options.input,
+        options.format,
+        Some(output.as_path()),
+        options.asset_dir.as_deref(),
+    )
+}
+
+fn convert_file(
+    input_path: &Path,
+    selected_format: Option<Format>,
+    output: Option<&Path>,
+    asset_dir: Option<&Path>,
+) -> Result<(), CliError> {
+    let input = fs::read(input_path)?;
+    copy_input(input_path)?;
+    let format = selected_format
+        .or_else(|| Format::from_path(input_path))
+        .ok_or(CliError::UnknownFormat)?;
+    let mut document = convert(format, &input)?;
+    if let Some(asset_dir) = asset_dir {
+        assets::write(format, &input, &mut document, asset_dir, output)?;
+    }
+    let html = render_html(&document);
+
+    if let Some(output) = output {
+        write_output(output, &html)?;
     } else {
         print!("{html}");
     }
+    Ok(())
+}
+
+fn copy_input(input_path: &Path) -> Result<(), CliError> {
+    let Some(destination) = input_copy_path(input_path) else {
+        return Ok(());
+    };
+    if same_file(input_path, &destination) {
+        return Ok(());
+    }
+
+    fs::create_dir_all("input")?;
+    fs::copy(input_path, destination)?;
+    Ok(())
+}
+
+fn input_copy_path(input_path: &Path) -> Option<PathBuf> {
+    Some(PathBuf::from("input").join(input_path.file_name()?))
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn write_output(output: &Path, html: &str) -> Result<(), CliError> {
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    fs::write(output, html)?;
     Ok(())
 }
 
@@ -34,14 +96,14 @@ fn convert(format: Format, input: &[u8]) -> Result<tohtml::Document, ConvertErro
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
+pub(super) enum Format {
     Markdown,
     Docx,
     Pdf,
 }
 
 impl Format {
-    fn parse(value: &str) -> Result<Self, CliError> {
+    pub(super) fn parse(value: &str) -> Result<Self, CliError> {
         match value.to_ascii_lowercase().as_str() {
             "md" | "markdown" => Ok(Self::Markdown),
             "docx" => Ok(Self::Docx),
@@ -50,7 +112,7 @@ impl Format {
         }
     }
 
-    fn from_path(path: &Path) -> Option<Self> {
+    pub(super) fn from_path(path: &Path) -> Option<Self> {
         match path
             .extension()?
             .to_string_lossy()
@@ -63,6 +125,14 @@ impl Format {
             _ => None,
         }
     }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Markdown => "Markdown",
+            Self::Docx => "DOCX",
+            Self::Pdf => "PDF",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -71,6 +141,7 @@ struct Options {
     output: Option<PathBuf>,
     format: Option<Format>,
     asset_dir: Option<PathBuf>,
+    interactive: bool,
 }
 
 impl Options {
@@ -86,7 +157,7 @@ impl Options {
             index += 1;
         }
 
-        if options.input.as_os_str().is_empty() {
+        if !options.interactive && options.input.as_os_str().is_empty() {
             return Err(CliError::MissingInput);
         }
         Ok(options)
@@ -98,6 +169,7 @@ fn parse_arg(options: &mut Options, args: &[String], index: &mut usize) -> Resul
         "-o" | "--output" => options.output = Some(next_path(args, index, "--output")?),
         "--format" => options.format = Some(Format::parse(next_value(args, index, "--format")?)?),
         "--asset-dir" => options.asset_dir = Some(next_path(args, index, "--asset-dir")?),
+        "--interactive" | "/interactive" => options.interactive = true,
         "-h" | "--help" => return Err(CliError::Usage),
         value if value.starts_with('-') => return Err(CliError::UnknownOption(value.to_string())),
         value => set_input(options, value)?,
@@ -142,6 +214,7 @@ pub enum CliError {
     UnexpectedArgument(String),
     InvalidFormat(String),
     UnknownFormat,
+    Interactive(String),
     Convert(ConvertError),
     Io(std::io::Error),
 }
@@ -172,6 +245,7 @@ impl std::fmt::Display for CliError {
             Self::UnknownFormat => {
                 write!(formatter, "could not detect input format; pass --format")
             }
+            Self::Interactive(error) => write!(formatter, "interactive mode failed: {error}"),
             Self::Convert(error) => write!(formatter, "{error}"),
             Self::Io(error) => write!(formatter, "{error}"),
         }
@@ -179,7 +253,22 @@ impl std::fmt::Display for CliError {
 }
 
 fn usage() -> &'static str {
-    "usage: tohtml <input> [--format markdown|docx|pdf] [--output file] [--asset-dir dir]"
+    "usage: tohtml <input> [--format markdown|docx|pdf] [--output file] [--asset-dir dir]\n       tohtml /interactive\n\nDefault output: output/<input-name>.html"
+}
+
+pub(super) fn default_output_path(input: &Path) -> PathBuf {
+    PathBuf::from("output").join(default_output_name(input))
+}
+
+pub(super) fn default_output_name(input: &Path) -> String {
+    let stem = input
+        .file_stem()
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| std::ffi::OsStr::new("output"));
+    PathBuf::from(stem)
+        .with_extension("html")
+        .display()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -207,5 +296,29 @@ mod tests {
         assert_eq!(Format::from_path(Path::new("a.pdf")), Some(Format::Pdf));
         assert_eq!(Format::from_path(Path::new("a.docx")), Some(Format::Docx));
         assert_eq!(Format::from_path(Path::new("a.md")), Some(Format::Markdown));
+    }
+
+    #[test]
+    fn parses_interactive_without_input() {
+        let options = Options::parse(vec!["/interactive".to_string()]).unwrap();
+
+        assert!(options.interactive);
+        assert!(options.input.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn defaults_output_to_project_output_directory() {
+        assert_eq!(
+            default_output_path(Path::new("C:/docs/report.pdf")),
+            PathBuf::from("output").join("report.html")
+        );
+    }
+
+    #[test]
+    fn input_copy_uses_project_input_directory() {
+        assert_eq!(
+            input_copy_path(Path::new("C:/docs/report.pdf")),
+            Some(PathBuf::from("input").join("report.pdf"))
+        );
     }
 }

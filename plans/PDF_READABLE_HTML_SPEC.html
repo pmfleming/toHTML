@@ -1,0 +1,876 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>toHTML PDF Readable HTML Specification</title>
+</head>
+<body>
+  <header>
+    <h1>toHTML PDF Readable HTML Specification</h1>
+    <p>
+      This document defines the PDF support profile for <code>toHTML</code>: enough
+      compliance with ISO 32000 PDF standards to turn a readable, selectable-text
+      PDF into readable, structured HTML.
+    </p>
+    <p>
+      This is an implementation specification for the converter. It is not a
+      claim of full PDF reader conformance and it is not a pixel-perfect rendering
+      specification.
+    </p>
+  </header>
+
+  <main>
+    <section id="source-standards">
+      <h2>1. Source Standards</h2>
+      <p>
+        The implementation profile is derived from the two local standards files
+        in the repository:
+      </p>
+      <ul>
+        <li>
+          <a href="../standard/PDF32000_2008.pdf">PDF32000_2008.pdf</a>:
+          ISO 32000-1:2008, PDF 1.7.
+        </li>
+        <li>
+          <a href="../standard/ISO_32000-2_sponsored-ec2.pdf">ISO_32000-2_sponsored-ec2.pdf</a>:
+          ISO 32000-2:2020, PDF 2.0, including Errata Collection 2 annotations
+          available in the local copy.
+        </li>
+      </ul>
+      <p>
+        New implementation work should use ISO 32000-2 as the primary reference
+        where it clarifies or updates ISO 32000-1. ISO 32000-1 remains necessary
+        for legacy PDF 1.7 behavior, especially older files that rely on features
+        deprecated or clarified in PDF 2.0.
+      </p>
+      <p>
+        Standard text is intentionally paraphrased here. This document identifies
+        clauses and implementation obligations without copying the standards.
+      </p>
+    </section>
+
+    <section id="profile">
+      <h2>2. PDF Readable HTML Profile</h2>
+      <p>
+        The profile is goal-based. Earlier goals create the minimum reliable
+        extraction path. Later goals add semantic structure and formatting
+        fidelity. Each goal is independently testable.
+      </p>
+
+      <section id="terms">
+        <h3>2.1 Requirement Terms</h3>
+        <ul>
+          <li><strong>MUST</strong>: required for the goal to be considered implemented.</li>
+          <li><strong>SHOULD</strong>: expected unless there is a documented reason not to do it.</li>
+          <li><strong>MAY</strong>: optional behavior that can improve output without changing the compliance baseline.</li>
+          <li><strong>OUT OF SCOPE</strong>: deliberately excluded from this profile unless a later project stage reopens it.</li>
+        </ul>
+      </section>
+
+      <section id="readable-pdf">
+        <h3>2.2 Definition: Readable PDF</h3>
+        <p>
+          For this application, a readable PDF is a PDF whose meaningful document
+          content is available through PDF text-showing operations, tagged PDF
+          structure, replacement text, or other standard PDF text mechanisms.
+        </p>
+        <p>
+          A scanned page image without selectable text is not a readable PDF for
+          this profile. The converter MUST report such pages as non-extractable
+          placeholders unless OCR is explicitly added as a separate feature.
+        </p>
+      </section>
+
+      <section id="readable-html">
+        <h3>2.3 Definition: Readable HTML</h3>
+        <p>
+          Readable HTML means semantic HTML that preserves the document's textual
+          content, reading order, page boundaries when useful, headings, paragraphs,
+          lists, tables, links, figures, and extraction warnings. It does not mean
+          exact font, color, coordinate, or page-layout reproduction.
+        </p>
+        <p>
+          Generated converter output MUST remain aligned with the application
+          contract: no CSS and no JavaScript by default. Structure comes from HTML
+          elements and attributes.
+        </p>
+      </section>
+    </section>
+
+    <section id="standard-map">
+      <h2>3. Required PDF Standard Areas</h2>
+      <p>
+        The converter only needs the parts of the PDF standards that affect
+        extraction of readable content and reconstruction of semantic HTML.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>ISO 32000-1 clauses</th>
+            <th>ISO 32000-2 clauses</th>
+            <th>Why it matters to toHTML</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Lexical syntax and objects</td>
+            <td>7.2, 7.3</td>
+            <td>7.2, 7.3</td>
+            <td>Required to parse names, strings, arrays, dictionaries, streams, and indirect objects without false text hits.</td>
+          </tr>
+          <tr>
+            <td>Stream filters</td>
+            <td>7.4</td>
+            <td>7.4</td>
+            <td>Required to decode page content streams, CMaps, object streams, forms, images, and metadata.</td>
+          </tr>
+          <tr>
+            <td>File structure</td>
+            <td>7.5</td>
+            <td>7.5</td>
+            <td>Required to locate current object revisions, xref tables, xref streams, object streams, and incremental updates.</td>
+          </tr>
+          <tr>
+            <td>Encryption</td>
+            <td>7.6</td>
+            <td>7.6</td>
+            <td>Required to detect protected files and avoid producing misleading partial output.</td>
+          </tr>
+          <tr>
+            <td>Document and page structure</td>
+            <td>7.7, especially 7.7.3</td>
+            <td>7.7, especially 7.7.3</td>
+            <td>Required to walk pages in page-tree order, inherit page resources, and attach source page numbers.</td>
+          </tr>
+          <tr>
+            <td>Content streams and resources</td>
+            <td>7.8</td>
+            <td>7.8</td>
+            <td>Required to resolve page-local fonts, XObjects, ExtGState, marked-content properties, and nested forms.</td>
+          </tr>
+          <tr>
+            <td>Images and external objects</td>
+            <td>8.8, 8.9, 8.10</td>
+            <td>8.8, 8.9, 8.10</td>
+            <td>Required to identify image-only pages, figures, inline images, and Form XObjects containing additional text.</td>
+          </tr>
+          <tr>
+            <td>Text state and operators</td>
+            <td>9.3, 9.4</td>
+            <td>9.3, 9.4</td>
+            <td>Required to interpret text positions, line breaks, spacing, rotations, and show-string operations.</td>
+          </tr>
+          <tr>
+            <td>Fonts and encodings</td>
+            <td>9.6, 9.7, Annex D</td>
+            <td>9.6, 9.7, Annex D</td>
+            <td>Required to map character codes to Unicode and estimate glyph advance for word, line, and table reconstruction.</td>
+          </tr>
+          <tr>
+            <td>Text extraction</td>
+            <td>9.10</td>
+            <td>9.10</td>
+            <td>Required to prioritize Unicode maps, ActualText, and standard fallback behavior when extracting content.</td>
+          </tr>
+          <tr>
+            <td>Marked content</td>
+            <td>14.6</td>
+            <td>14.6</td>
+            <td>Required to use MCIDs, artifacts, properties, and replacement text for semantic extraction.</td>
+          </tr>
+          <tr>
+            <td>Logical structure and tagged PDF</td>
+            <td>14.7, 14.8</td>
+            <td>14.7, 14.8</td>
+            <td>Required to extract headings, paragraphs, lists, tables, figures, captions, and reading order when tags exist.</td>
+          </tr>
+          <tr>
+            <td>Accessibility and repurposing support</td>
+            <td>14.9</td>
+            <td>14.9</td>
+            <td>Required for language, alternate descriptions, replacement text, expansions, and pronunciation hints where useful.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="goals">
+      <h2>4. Implementation Goals</h2>
+
+      <section id="goal-0">
+        <h3>Goal 0: Define the Supported PDF Surface</h3>
+        <p>
+          Establish an honest support contract before parsing begins.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>ISO 32000-1 and ISO 32000-2: scope and conformance terminology.</li>
+          <li>ISO 32000-2: terminology changes replacing the older broad "conforming reader" framing with processor-specific expectations.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter MUST describe itself as a best-effort PDF-to-HTML extractor, not as a full PDF renderer or complete conforming PDF reader.</li>
+          <li>The converter MUST support unencrypted, local PDF files with selectable text as the primary target.</li>
+          <li>The converter MUST preserve readable content over visual fidelity.</li>
+          <li>The converter MUST produce warnings for unsupported but detected features that may affect content extraction.</li>
+          <li>The converter MUST NOT silently OCR scanned pages.</li>
+          <li>The converter SHOULD expose a machine-readable warning list in the internal document model and a human-visible warning area in generated HTML when warnings exist.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A PDF with no extractable text produces page placeholders and a warning.</li>
+          <li>A PDF with unsupported filters or encryption produces an explicit error or warning rather than corrupted text.</li>
+          <li>Documentation states exactly which PDF features are supported at the current goal level.</li>
+        </ul>
+      </section>
+
+      <section id="goal-1">
+        <h3>Goal 1: Parse PDF Syntax Without False Text Extraction</h3>
+        <p>
+          Replace raw byte scanning with a real PDF object parser for the subset
+          needed by readable extraction.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>7.2 Lexical conventions: white space, delimiters, comments, tokens.</li>
+          <li>7.3 Objects: booleans, numbers, strings, names, arrays, dictionaries, streams, null, indirect objects.</li>
+          <li>7.3.4 String objects: literal strings, escapes, balanced parentheses, hexadecimal strings.</li>
+          <li>7.3.8 Stream objects: stream dictionary, stream extent, line endings around stream data.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The parser MUST tokenize PDF lexical syntax according to standard delimiter and white-space rules.</li>
+          <li>The parser MUST parse literal strings with nested parentheses and escape sequences.</li>
+          <li>The parser MUST parse hexadecimal strings, including odd digit count handling.</li>
+          <li>The parser MUST parse name objects, including escaped name bytes introduced with <code>#</code> hexadecimal escapes.</li>
+          <li>The parser MUST parse arrays and dictionaries recursively enough to resolve page trees, resources, fonts, content streams, CMaps, and structure trees.</li>
+          <li>The parser MUST parse indirect references in the form <code>object generation R</code>, not only generation <code>0</code>.</li>
+          <li>The parser MUST treat stream bytes as bytes, not as text, until the stream dictionary is parsed and filters are applied.</li>
+          <li>The parser MUST NOT search all parenthesized byte ranges as document text.</li>
+          <li>The parser SHOULD preserve byte offsets for diagnostics and source spans.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>Text in image streams, font programs, metadata, and compressed binary streams is not emitted as document text.</li>
+          <li>PDF strings with escaped parentheses and octal escapes extract correctly.</li>
+          <li>Indirect objects with non-zero generations can be resolved when referenced by the current xref data.</li>
+        </ul>
+      </section>
+
+      <section id="goal-2">
+        <h3>Goal 2: Locate the Current Document Objects</h3>
+        <p>
+          Use the PDF file structure so extraction operates on the current object
+          graph rather than every byte sequence that looks interesting.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>7.5 File structure: header, body, cross-reference data, trailer.</li>
+          <li>7.5.4 Cross-reference tables.</li>
+          <li>7.5.5 File trailer and root catalog.</li>
+          <li>7.5.6 Incremental updates.</li>
+          <li>7.5.7 Object streams.</li>
+          <li>7.5.8 Cross-reference streams.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The parser MUST locate the final <code>startxref</code> entry and follow the active cross-reference chain.</li>
+          <li>The parser MUST use the latest revision of each object according to cross-reference data and incremental update rules.</li>
+          <li>The parser MUST read the trailer dictionary and resolve the document catalog through <code>/Root</code>.</li>
+          <li>The parser MUST support classic cross-reference tables for PDF 1.x files.</li>
+          <li>The parser SHOULD support cross-reference streams because they are common in modern PDFs.</li>
+          <li>The parser SHOULD support object streams because modern PDFs may compress ordinary objects into streams.</li>
+          <li>If xref streams or object streams are not yet supported, the converter MUST emit a clear warning or error when content depends on them.</li>
+          <li>The parser MUST avoid choosing stale object revisions from earlier incremental updates.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A PDF with an incremental update extracts the updated text, not the original stale text.</li>
+          <li>A PDF using a classic xref table resolves pages, resources, fonts, and content streams through indirect references.</li>
+          <li>A PDF using an unsupported xref stream or object stream fails with an actionable diagnostic rather than partial nonsense output.</li>
+        </ul>
+      </section>
+
+      <section id="goal-3">
+        <h3>Goal 3: Decode Content Streams Reliably</h3>
+        <p>
+          Decode the stream types required to reach page text, CMaps, resources,
+          and nested form content.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>7.3.8 Stream objects.</li>
+          <li>7.4 Filters.</li>
+          <li>7.4.2 ASCIIHexDecode.</li>
+          <li>7.4.3 ASCII85Decode.</li>
+          <li>7.4.4 LZWDecode and FlateDecode.</li>
+          <li>7.4.5 RunLengthDecode.</li>
+          <li>7.4.10 Crypt filter.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The stream decoder MUST respect <code>/Length</code> and stream extent rules.</li>
+          <li>The stream decoder MUST support unfiltered streams.</li>
+          <li>The stream decoder MUST support <code>/FlateDecode</code> for page content streams and CMaps.</li>
+          <li>The stream decoder MUST support filter arrays and apply filters in order.</li>
+          <li>The stream decoder SHOULD support <code>/ASCIIHexDecode</code>, <code>/ASCII85Decode</code>, and <code>/RunLengthDecode</code> for content streams.</li>
+          <li>The stream decoder SHOULD support <code>/LZWDecode</code> when encountered in legacy PDFs.</li>
+          <li>The stream decoder MAY ignore image-only filters such as <code>/DCTDecode</code>, <code>/JPXDecode</code>, <code>/CCITTFaxDecode</code>, and <code>/JBIG2Decode</code> for OCR purposes, but MUST still identify the stream as image content when possible.</li>
+          <li>The stream decoder MUST respect <code>/DecodeParms</code> when those parameters affect decoded content required for extraction.</li>
+          <li>The stream decoder MUST produce a warning when an unsupported filter prevents extraction of page text, CMaps, object streams, or forms.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A Flate-compressed page content stream extracts the same text as its uncompressed equivalent.</li>
+          <li>A stream with multiple filters decodes in the correct order.</li>
+          <li>A stream with an unsupported text-critical filter records which filter blocked extraction.</li>
+        </ul>
+      </section>
+
+      <section id="goal-4">
+        <h3>Goal 4: Walk Pages in Document Order</h3>
+        <p>
+          Extract from page objects rather than arbitrary streams.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>7.7 Document structure.</li>
+          <li>7.7.2 Document catalog.</li>
+          <li>7.7.3 Page tree, page tree nodes, page objects, inherited page attributes.</li>
+          <li>7.8 Content streams and resources.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter MUST resolve the catalog <code>/Pages</code> tree.</li>
+          <li>The converter MUST traverse the page tree in page order.</li>
+          <li>The converter MUST extract only from page content streams and nested Form XObjects reachable from pages.</li>
+          <li>The converter MUST support page <code>/Contents</code> as a single stream or an array of streams.</li>
+          <li>The converter MUST apply inherited page attributes relevant to extraction, including <code>/Resources</code>, <code>/MediaBox</code>, <code>/CropBox</code>, and <code>/Rotate</code> where present.</li>
+          <li>The converter SHOULD create a <code>PageBreak</code> or page source boundary between extracted pages.</li>
+          <li>The converter SHOULD attach page numbers to source spans, warnings, placeholders, and extracted blocks.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>Output text follows page-tree order, not object-number order.</li>
+          <li>Pages with inherited resources can resolve fonts and CMaps.</li>
+          <li>Empty or non-extractable pages create page placeholders without collapsing neighboring page text.</li>
+        </ul>
+      </section>
+
+      <section id="goal-5">
+        <h3>Goal 5: Interpret Text Objects and Text-Showing Operators</h3>
+        <p>
+          Convert PDF text instructions into positioned text segments.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>9.3 Text state parameters and operators.</li>
+          <li>9.4 Text objects.</li>
+          <li>9.4.2 Text-positioning operators.</li>
+          <li>9.4.3 Text-showing operators.</li>
+          <li>9.4.4 Text space details.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The content stream interpreter MUST recognize <code>BT</code> and <code>ET</code> text object boundaries.</li>
+          <li>The interpreter MUST maintain the text matrix and text line matrix.</li>
+          <li>The interpreter MUST maintain relevant text state: character spacing, word spacing, horizontal scaling, leading, font, font size, text rendering mode, and text rise.</li>
+          <li>The interpreter MUST support text-positioning operators <code>Td</code>, <code>TD</code>, <code>Tm</code>, and <code>T*</code>.</li>
+          <li>The interpreter MUST support text-showing operators <code>Tj</code>, <code>TJ</code>, apostrophe, and double quote.</li>
+          <li>The interpreter MUST interpret <code>TJ</code> numeric adjustments as positioning changes that can indicate word gaps or tight kerning.</li>
+          <li>The interpreter MUST advance text position using font metrics when available.</li>
+          <li>The interpreter SHOULD track graphics state save and restore with <code>q</code> and <code>Q</code> where it affects the current transformation matrix.</li>
+          <li>The interpreter SHOULD account for page rotation and current transformation matrix enough to produce correct reading order for common rotated pages.</li>
+          <li>The interpreter MUST ignore text rendering modes only for visual styling, not for whether text exists. Invisible or clipping text requires Goal 13 handling.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>Simple PDFs using <code>Tj</code>, <code>TJ</code>, <code>Td</code>, <code>TD</code>, and <code>Tm</code> extract words in the expected order.</li>
+          <li>Reasonable word spacing is preserved for text split across multiple show operations.</li>
+          <li>Line breaks are inferred from text matrices and line movement, not from stream byte layout.</li>
+        </ul>
+      </section>
+
+      <section id="goal-6">
+        <h3>Goal 6: Map PDF Character Codes to Unicode</h3>
+        <p>
+          Produce real text rather than font-specific glyph codes.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>9.6 Simple fonts.</li>
+          <li>9.6.5 Character encoding in PDF 2.0, corresponding 9.6.6 in PDF 1.7.</li>
+          <li>9.7 Composite fonts and CMaps.</li>
+          <li>9.10 Extraction of text content.</li>
+          <li>9.10.3 ToUnicode CMaps.</li>
+          <li>Annex D Character sets and encodings.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter MUST use a font dictionary's <code>/ToUnicode</code> CMap when present.</li>
+          <li>The converter MUST parse ToUnicode mappings from <code>beginbfchar</code> and <code>beginbfrange</code>.</li>
+          <li>The converter MUST support one-byte and multi-byte source character codes according to CMap codespace ranges.</li>
+          <li>The converter MUST support ToUnicode targets containing multiple Unicode scalar values, such as ligatures mapped to multiple letters.</li>
+          <li>The converter MUST decode ToUnicode target strings as UTF-16BE unless the standard specifies another interpretation for the relevant string form.</li>
+          <li>The converter SHOULD support predefined encodings for simple fonts, including WinAnsiEncoding, MacRomanEncoding, MacExpertEncoding, StandardEncoding, Symbol, and ZapfDingbats where needed for fallback.</li>
+          <li>The converter SHOULD support Differences arrays for simple font encodings.</li>
+          <li>The converter SHOULD support Type 0 fonts with Identity-H and Identity-V CMaps when paired with ToUnicode or usable CID mapping.</li>
+          <li>The converter MUST record a warning when text cannot be mapped to Unicode with acceptable confidence.</li>
+          <li>The converter MUST NOT emit private glyph codes or raw binary as if they were readable text.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>ASCII, WinAnsi, and ToUnicode-based PDFs extract expected Unicode text.</li>
+          <li>Ligature mappings such as a single glyph representing "fi" emit "fi" when ToUnicode provides that mapping.</li>
+          <li>Multi-byte CMaps do not split character codes into incorrect single-byte fallback characters.</li>
+        </ul>
+      </section>
+
+      <section id="goal-7">
+        <h3>Goal 7: Reconstruct Lines, Words, and Paragraphs</h3>
+        <p>
+          Convert positioned glyph runs into readable prose.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>9.3 Text state and spacing parameters.</li>
+          <li>9.4 Text positioning and text space.</li>
+          <li>9.10 Text extraction.</li>
+          <li>14.8.2.6 in PDF 2.0 and 14.8.2.5 in PDF 1.7 for identifying word breaks in tagged PDF contexts.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The layout pass MUST group text segments into lines using transformed baseline positions and font size tolerance.</li>
+          <li>The layout pass MUST order text within a line by writing direction and x position for common left-to-right horizontal text.</li>
+          <li>The layout pass SHOULD support right-to-left and vertical writing as detected by font/CMap or text direction signals, but MAY initially warn when unsupported.</li>
+          <li>The layout pass MUST infer word gaps from actual segment positions, glyph advances, word spacing, and <code>TJ</code> adjustments.</li>
+          <li>The layout pass MUST avoid inserting spaces inside words merely because a word was split across text-showing operations.</li>
+          <li>The layout pass SHOULD join lines into paragraphs based on indentation, vertical gap, font size, and consistent alignment.</li>
+          <li>The layout pass SHOULD preserve hard line breaks only when the source layout indicates a list item, address, poem, code-like text, table row, or intentionally separate line.</li>
+          <li>The layout pass MUST normalize repeated extraction whitespace into readable text while preserving meaningful spaces.</li>
+          <li>The layout pass SHOULD dehyphenate line-ending soft hyphenation when evidence indicates a word was split only because of line wrapping.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>Words do not collapse into strings such as "withoutChangingthe" when measurable gaps exist.</li>
+          <li>Words do not split into strings such as "programm er" when glyph metrics indicate continuous text.</li>
+          <li>Multi-line paragraphs become single HTML paragraphs unless layout indicates separate blocks.</li>
+        </ul>
+      </section>
+
+      <section id="goal-8">
+        <h3>Goal 8: Detect Basic Document Blocks</h3>
+        <p>
+          Infer headings, paragraphs, lists, and block boundaries from layout
+          when no tagged structure is available.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>9.3 and 9.4 for text size, position, and baseline information.</li>
+          <li>14.8.4 for standard structure types when tags are available.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter MUST emit paragraph blocks for ordinary prose.</li>
+          <li>The converter SHOULD infer headings from a combination of larger font size, bold font naming cues, isolated line position, vertical spacing, numbering patterns, and repeated document conventions.</li>
+          <li>The converter SHOULD assign heading levels consistently within a document, using relative hierarchy rather than absolute font size alone.</li>
+          <li>The converter SHOULD detect unordered list items from bullet glyphs and indentation.</li>
+          <li>The converter SHOULD detect ordered list items from numbering patterns and indentation.</li>
+          <li>The converter SHOULD keep continuation lines inside the same list item when indentation and vertical spacing indicate continuation.</li>
+          <li>The converter MUST avoid treating page headers, footers, and page numbers as main content when repeated-region detection identifies them.</li>
+          <li>The converter SHOULD preserve source page numbers in block source spans.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A basic report with large section titles emits <code>h1</code> through <code>h6</code> where hierarchy is inferable.</li>
+          <li>Bullet and numbered lists become <code>ul</code> and <code>ol</code> with nested <code>li</code> content.</li>
+          <li>Repeated headers and footers do not pollute the main text stream by default.</li>
+        </ul>
+      </section>
+
+      <section id="goal-9">
+        <h3>Goal 9: Reconstruct Tables from Selectable Text</h3>
+        <p>
+          Produce semantic HTML tables when a table is represented by selectable
+          text and positional layout, even if the PDF has no table tags.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>9.3 and 9.4 for text positioning and spacing.</li>
+          <li>14.8.4 table structure types when tagged PDF is available.</li>
+          <li>14.8.5 table-related layout attributes when present.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The table detector MUST operate only on selectable text unless OCR is later added.</li>
+          <li>The table detector MUST cluster candidate rows by baseline position.</li>
+          <li>The table detector MUST cluster columns by x alignment, repeated gaps, ruling-line hints if available, and consistent cell boundaries across adjacent rows.</li>
+          <li>The table detector SHOULD use vector drawing lines and rectangles as hints for cell boundaries, but MUST NOT require ruling lines to detect a table.</li>
+          <li>The table detector SHOULD use font weight, background rectangles, top row repetition, and tag data to infer header cells.</li>
+          <li>The table detector SHOULD support cells spanning multiple columns or rows when text regions or ruling geometry indicate spans.</li>
+          <li>The table detector SHOULD distinguish multi-column page layout from data tables by checking row alignment repetition, column count stability, header patterns, and inter-column prose flow.</li>
+          <li>The converter MUST emit <code>table</code>, <code>thead</code> when header rows are known, <code>tbody</code>, <code>tr</code>, <code>th</code>, and <code>td</code> as appropriate.</li>
+          <li>The converter MUST preserve cell reading order and inline text inside cells.</li>
+          <li>The converter MUST emit a warning when a likely table is image-only or otherwise non-extractable.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A simple selectable-text table with aligned columns becomes an HTML table.</li>
+          <li>A table without visible grid lines but with repeated aligned columns becomes an HTML table.</li>
+          <li>Two-column prose is not incorrectly converted into a table.</li>
+          <li>Image-only specification tables produce a warning rather than an empty or fabricated table.</li>
+        </ul>
+      </section>
+
+      <section id="goal-10">
+        <h3>Goal 10: Extract Links, Images, Figures, and Captions</h3>
+        <p>
+          Preserve non-textual content that contributes to document readability.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>8.8 External objects and XObjects.</li>
+          <li>8.9 Images and inline images.</li>
+          <li>8.10 Form XObjects.</li>
+          <li>12.5 Annotations, especially link annotations.</li>
+          <li>14.8.4 figure and caption structure types.</li>
+          <li>14.9.3 Alternate descriptions.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter SHOULD detect image XObjects and inline images reachable from page content streams.</li>
+          <li>The converter MAY extract image assets to the configured asset directory when image extraction is enabled.</li>
+          <li>The converter MUST warn when a page contains image content that may contain non-selectable text and OCR is not enabled.</li>
+          <li>The converter SHOULD detect link annotations and attach URLs to overlapping text ranges as HTML anchors.</li>
+          <li>The converter SHOULD use figure tags, captions, and alternate descriptions from tagged PDF when available.</li>
+          <li>The converter SHOULD use <code>/Alt</code> text for image alt text when provided by the structure tree.</li>
+          <li>The converter MAY create <code>figure</code> and <code>figcaption</code> output where figure-caption association is reliable.</li>
+          <li>The converter MUST NOT invent alt text for images without evidence; it should leave alt empty or record a warning depending on output policy.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A PDF link annotation over visible text becomes an HTML <code>a</code> element with the correct href.</li>
+          <li>A tagged figure with alternate text maps to an HTML image or figure with appropriate alt text.</li>
+          <li>A scanned image page produces a non-extractable placeholder and image/OCR warning.</li>
+        </ul>
+      </section>
+
+      <section id="goal-11">
+        <h3>Goal 11: Use Tagged PDF Structure When Available</h3>
+        <p>
+          Prefer author-provided logical structure over geometric inference.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>14.6 Marked content.</li>
+          <li>14.7 Logical structure.</li>
+          <li>14.8 Tagged PDF.</li>
+          <li>14.8.4 Standard structure types.</li>
+          <li>14.8.5 Standard structure attributes.</li>
+          <li>14.9 Repurposing and accessibility support.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter SHOULD detect the document catalog's <code>/StructTreeRoot</code>.</li>
+          <li>The converter SHOULD walk the logical structure tree in structure order when it is complete enough for extraction.</li>
+          <li>The converter SHOULD map standard structure types to internal document blocks: headings, paragraphs, lists, list labels, list bodies, tables, table rows, table headers, table cells, figures, captions, formulas, and links.</li>
+          <li>The converter MUST use marked-content IDs to associate structure elements with page content.</li>
+          <li>The converter MUST ignore artifacts as main document content when tags identify them as artifacts.</li>
+          <li>The converter SHOULD support role maps and namespaces, especially in PDF 2.0 where standard structure namespaces are more explicit.</li>
+          <li>The converter SHOULD use structure attributes for table headers, scope, row spans, column spans, and layout hints when present.</li>
+          <li>The converter SHOULD fall back to geometric extraction for untagged or incomplete portions of the document.</li>
+          <li>The converter MUST record a warning when tags are present but internally inconsistent enough to prevent reliable extraction.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A tagged PDF with heading and paragraph tags produces corresponding HTML headings and paragraphs even if visual font sizes are ambiguous.</li>
+          <li>A tagged PDF table produces semantic table markup with headers and cell spans where specified.</li>
+          <li>Tagged artifacts such as page numbers and running headers are excluded from main content.</li>
+        </ul>
+      </section>
+
+      <section id="goal-12">
+        <h3>Goal 12: Honor Replacement Text, Language, and Accessibility Metadata</h3>
+        <p>
+          Use PDF extraction aids designed for repurposing content.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>9.10 Text extraction.</li>
+          <li>14.9.2 Natural language specification.</li>
+          <li>14.9.3 Alternate descriptions.</li>
+          <li>14.9.4 Replacement text.</li>
+          <li>14.9.5 Expansion of abbreviations and acronyms.</li>
+          <li>14.9.6 Pronunciation hints in PDF 2.0.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter MUST prefer <code>/ActualText</code> over visually shown glyph text for the marked-content sequence or structure element to which it applies.</li>
+          <li>The converter SHOULD use <code>/Alt</code> for alternate descriptions of figures and non-textual content.</li>
+          <li>The converter SHOULD preserve document language from the catalog <code>/Lang</code> and more specific structure language where available.</li>
+          <li>The converter SHOULD use expansion text for abbreviations when it improves readable output or can be represented semantically.</li>
+          <li>The converter MAY preserve pronunciation hints in metadata or warnings if there is no direct HTML representation in the current document model.</li>
+          <li>The converter MUST apply replacement text only to the smallest applicable content range to avoid duplicating surrounding text.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A symbol or formula with <code>/ActualText</code> emits the replacement text instead of unreadable glyph names.</li>
+          <li>Document language is reflected in the generated HTML <code>lang</code> attribute when available.</li>
+          <li>Alternate text is preserved for tagged figures.</li>
+        </ul>
+      </section>
+
+      <section id="goal-13">
+        <h3>Goal 13: Handle Hidden, Invisible, and Duplicate Text</h3>
+        <p>
+          Avoid extracting content that harms readability, while preserving text
+          deliberately supplied for accessibility or copy/paste.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>9.3.6 Text rendering mode.</li>
+          <li>14.8.2 Tagged PDF and page content.</li>
+          <li>14.8.2.4 Hidden or invisible page content in PDF 2.0.</li>
+          <li>14.8.2.5 Page content order and logical content order in PDF 2.0.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter SHOULD detect text rendering modes and graphics state that make text invisible or clipping-only.</li>
+          <li>The converter SHOULD exclude invisible duplicate text when it merely shadows visible text and harms readability.</li>
+          <li>The converter MUST preserve invisible text when tagged structure or replacement text indicates it is the intended accessible representation.</li>
+          <li>The converter SHOULD deduplicate overlapping identical text segments produced by rendering tricks or layered content.</li>
+          <li>The converter SHOULD use tagged logical order over paint order when both are available and disagree.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>PDFs with hidden OCR text over a scanned page do not emit repeated nonsense if the text is poorly aligned or non-readable; they warn when confidence is low.</li>
+          <li>PDFs with accessible replacement text emit the intended text once.</li>
+          <li>Layered duplicate visible text is not duplicated in HTML output.</li>
+        </ul>
+      </section>
+
+      <section id="goal-14">
+        <h3>Goal 14: Preserve Readable Formatting Without CSS</h3>
+        <p>
+          Map supported PDF semantics into the existing HTML document model using
+          semantic elements only.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>9.3 Text state for font size and styling signals.</li>
+          <li>9.6 Fonts for bold, italic, symbolic, and width information.</li>
+          <li>14.8 Standard structure types and attributes.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter MUST output semantic block elements: headings, paragraphs, lists, tables, images, block quotes when reliably detected, page breaks, and placeholders.</li>
+          <li>The converter SHOULD output inline emphasis and strong emphasis when font naming, font descriptor flags, or tagged semantics make it reliable.</li>
+          <li>The converter SHOULD output code-style inline or block content only when monospaced font and layout evidence strongly indicate code or preformatted content.</li>
+          <li>The converter SHOULD preserve line breaks inside preformatted or address-like content only when layout evidence supports it.</li>
+          <li>The converter MUST NOT use CSS positioning to recreate the PDF page.</li>
+          <li>The converter MUST NOT output JavaScript.</li>
+          <li>The converter MAY add data attributes or source metadata if they remain useful for diagnostics and do not become visual-layout dependencies.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A readable PDF report becomes a readable HTML document when opened in a plain browser with default styles.</li>
+          <li>Headings, lists, tables, and links are represented by semantic HTML elements rather than positioned spans.</li>
+          <li>Loss of visual styling does not prevent understanding the extracted document.</li>
+        </ul>
+      </section>
+
+      <section id="goal-15">
+        <h3>Goal 15: Report Unsupported Content Precisely</h3>
+        <p>
+          Make extraction limits visible and actionable.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>7.4 Filters for unsupported stream decoding.</li>
+          <li>7.6 Encryption.</li>
+          <li>8.9 Images for image-only content.</li>
+          <li>9.10 Text extraction limits.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>The converter MUST distinguish between "no text exists", "text exists but cannot be decoded", and "text may exist only in images".</li>
+          <li>The converter MUST include page number and feature name in warnings whenever known.</li>
+          <li>The converter MUST create page placeholders for pages with no extractable text.</li>
+          <li>The converter SHOULD produce one warning per distinct cause rather than flooding output with repeated low-level warnings.</li>
+          <li>The converter SHOULD include enough detail for tests and users to identify unsupported filters, encryption, missing CMaps, malformed content streams, or image-only tables.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>An encrypted PDF reports encryption as the blocker.</li>
+          <li>A PDF page containing only an image XObject reports non-extractable image content.</li>
+          <li>A page with unsupported CMap or font encoding reports text decoding uncertainty.</li>
+        </ul>
+      </section>
+
+      <section id="goal-16">
+        <h3>Goal 16: Build a PDF Fixture and Regression Suite</h3>
+        <p>
+          Verify every goal with small controlled fixtures before relying on
+          real-world PDFs.
+        </p>
+        <h4>Relevant standard areas</h4>
+        <ul>
+          <li>All clauses referenced by implemented goals.</li>
+        </ul>
+        <h4>Implementation requirements</h4>
+        <ul>
+          <li>Each parser feature MUST have focused fixtures with minimal PDFs or extracted object/content snippets.</li>
+          <li>Each layout feature SHOULD have golden HTML tests using realistic page geometry.</li>
+          <li>Fixtures MUST include uncompressed and Flate-compressed streams.</li>
+          <li>Fixtures SHOULD include classic xref tables, incremental updates, xref streams, object streams, inherited page resources, Form XObjects, ToUnicode CMaps, simple encodings, multi-byte CMaps, headings, lists, tables, links, artifacts, ActualText, image-only pages, and unsupported filters.</li>
+          <li>Regression tests MUST assert warnings as part of output, not only successful text.</li>
+          <li>Real sample PDFs MAY be used for broad regression coverage, but minimal fixtures are required for precise behavior.</li>
+        </ul>
+        <h4>Acceptance criteria</h4>
+        <ul>
+          <li>A failing PDF extraction can be reduced to a small fixture before the fix is accepted.</li>
+          <li>Golden tests cover text, tables, layout, warnings, and tagged PDF behavior as those goals are implemented.</li>
+          <li>Quality review includes parser complexity and module boundaries because PDF parsing can easily become unmaintainable.</li>
+        </ul>
+      </section>
+    </section>
+
+    <section id="html-mapping">
+      <h2>5. Internal Model and HTML Mapping</h2>
+      <p>
+        PDF extraction SHOULD target the existing shared document model before
+        rendering HTML. The mapping below defines the intended semantic output.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>PDF evidence</th>
+            <th>Internal model</th>
+            <th>HTML output</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Document title metadata or tagged document title</td>
+            <td><code>DocumentMetadata.title</code></td>
+            <td><code>title</code>, optional top-level heading only when source content supports it</td>
+          </tr>
+          <tr>
+            <td>Catalog or structure language</td>
+            <td><code>DocumentMetadata.language</code></td>
+            <td><code>html lang</code></td>
+          </tr>
+          <tr>
+            <td>Tagged heading or inferred heading line</td>
+            <td><code>Block::Heading</code></td>
+            <td><code>h1</code> through <code>h6</code></td>
+          </tr>
+          <tr>
+            <td>Running text grouped by layout or paragraph tag</td>
+            <td><code>Block::Paragraph</code></td>
+            <td><code>p</code></td>
+          </tr>
+          <tr>
+            <td>Tagged list or detected list markers and indentation</td>
+            <td><code>Block::List</code></td>
+            <td><code>ul</code>, <code>ol</code>, <code>li</code></td>
+          </tr>
+          <tr>
+            <td>Tagged table or detected row/column grid</td>
+            <td><code>Block::Table</code></td>
+            <td><code>table</code>, <code>thead</code>, <code>tbody</code>, <code>tr</code>, <code>th</code>, <code>td</code></td>
+          </tr>
+          <tr>
+            <td>Image XObject with reliable extraction</td>
+            <td><code>Block::Image</code> or <code>Inline::Image</code></td>
+            <td><code>img</code>, optionally inside <code>figure</code></td>
+          </tr>
+          <tr>
+            <td>Link annotation or link tag over text</td>
+            <td><code>Inline::Link</code></td>
+            <td><code>a href</code></td>
+          </tr>
+          <tr>
+            <td>Page boundary</td>
+            <td><code>Block::PageBreak</code></td>
+            <td>semantic page marker without CSS or JavaScript</td>
+          </tr>
+          <tr>
+            <td>Non-extractable page</td>
+            <td><code>Block::PagePlaceholder</code></td>
+            <td>placeholder element with reason text</td>
+          </tr>
+          <tr>
+            <td>Unsupported feature, uncertain decoding, skipped content</td>
+            <td><code>ConversionWarning</code></td>
+            <td>warning section or comments according to renderer policy</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="priority">
+      <h2>6. Recommended Build Order</h2>
+      <ol>
+        <li>Goal 0: lock the support contract and warning taxonomy.</li>
+        <li>Goal 1: implement real lexical/object parsing.</li>
+        <li>Goal 2: implement xref, trailer, object resolution, and page tree traversal.</li>
+        <li>Goal 3: implement stream decoding with filter arrays and warnings.</li>
+        <li>Goal 4: extract per page with inherited resources.</li>
+        <li>Goal 5: interpret text objects into positioned text segments.</li>
+        <li>Goal 6: improve Unicode mapping with robust font and CMap support.</li>
+        <li>Goal 7: reconstruct words, lines, and paragraphs.</li>
+        <li>Goal 8: infer headings and lists from layout.</li>
+        <li>Goal 9: reconstruct selectable-text tables.</li>
+        <li>Goal 10: add links, images, figures, and captions where reliable.</li>
+        <li>Goal 11: prefer tagged PDF logical structure.</li>
+        <li>Goal 12: apply ActualText, Alt, language, and accessibility metadata.</li>
+        <li>Goal 13: handle hidden, invisible, duplicate, and artifact content.</li>
+        <li>Goal 14: refine semantic formatting without CSS.</li>
+        <li>Goal 15: make unsupported content reporting precise.</li>
+        <li>Goal 16: keep fixture coverage growing with every goal.</li>
+      </ol>
+    </section>
+
+    <section id="non-goals">
+      <h2>7. Explicit Non-Goals</h2>
+      <ul>
+        <li>Pixel-perfect page rendering is OUT OF SCOPE.</li>
+        <li>CSS-positioned HTML recreation of PDF pages is OUT OF SCOPE.</li>
+        <li>JavaScript output is OUT OF SCOPE.</li>
+        <li>OCR is OUT OF SCOPE unless added as a separate, explicit feature.</li>
+        <li>Full interactive PDF behavior is OUT OF SCOPE, including forms execution, multimedia, 3D, JavaScript actions, and rich annotation behavior.</li>
+        <li>Digital signature validation is OUT OF SCOPE except for detecting that signature-related structures exist if they affect extraction warnings.</li>
+        <li>Exact color, typography, kerning, and visual design fidelity are OUT OF SCOPE except where metrics improve readable extraction.</li>
+        <li>Encrypted PDFs requiring passwords are OUT OF SCOPE for automatic extraction unless password handling is explicitly implemented.</li>
+      </ul>
+    </section>
+
+    <section id="done">
+      <h2>8. Definition of Done for PDF Readable HTML</h2>
+      <p>
+        The PDF implementation is good enough for the application when a typical
+        selectable-text PDF report, manual, article, or specification sheet can be
+        converted into HTML that a person can read from top to bottom without
+        consulting the PDF for basic comprehension.
+      </p>
+      <p>
+        At that point, the converter MUST reliably:
+      </p>
+      <ul>
+        <li>read pages in page-tree order;</li>
+        <li>extract Unicode text from common simple and composite fonts;</li>
+        <li>preserve words, line order, and paragraph flow;</li>
+        <li>represent headings, lists, and tables when reliably available;</li>
+        <li>preserve links and figure alt text when available;</li>
+        <li>use tagged PDF semantics when present;</li>
+        <li>exclude artifacts and repeated headers/footers when detectable;</li>
+        <li>create placeholders for non-extractable pages;</li>
+        <li>emit precise warnings for unsupported or uncertain content;</li>
+        <li>render semantic HTML with no CSS and no JavaScript by default.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

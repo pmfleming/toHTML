@@ -39,6 +39,7 @@ input file
 tohtml input.md --output output.html
 tohtml input.docx --format docx --output output.html
 tohtml input.pdf --asset-dir assets --output output.html
+tohtml /interactive
 ```
 
 ## Non-Goals

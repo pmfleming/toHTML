@@ -1,4 +1,7 @@
 /target/
+/output/
+/input/
+/standard/
 *.pdb
 *.profraw
 .env

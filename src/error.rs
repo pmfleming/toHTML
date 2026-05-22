@@ -6,6 +6,7 @@ pub enum ConvertError {
     MissingPart(&'static str),
     Xml(String),
     Io(String),
+    Pdf(String),
 }
 
 impl Display for ConvertError {
@@ -15,6 +16,7 @@ impl Display for ConvertError {
             Self::MissingPart(part) => write!(formatter, "missing required document part: {part}"),
             Self::Xml(message) => write!(formatter, "xml error: {message}"),
             Self::Io(message) => write!(formatter, "io error: {message}"),
+            Self::Pdf(message) => write!(formatter, "pdf error: {message}"),
         }
     }
 }

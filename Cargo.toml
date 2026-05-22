@@ -6,6 +6,8 @@ description = "Local-first document to structured HTML converter"
 license = "MIT"
 
 [dependencies]
+eframe = "0.34.2"
 flate2 = "1.1.9"
 quick-xml = "0.40.1"
+rfd = "0.17.2"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
