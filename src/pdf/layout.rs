@@ -12,12 +12,43 @@ pub fn blocks_from_segments(segments: &[TextSegment]) -> Vec<Block> {
             blocks.push(Block::Table(table));
             index += consumed;
         } else {
-            blocks.push(paragraph(&lines[index].text));
-            index += 1;
+            let (text, consumed) = parse_paragraph(&lines[index..]);
+            blocks.push(paragraph(&text));
+            index += consumed;
         }
     }
 
     blocks
+}
+
+fn parse_paragraph(lines: &[TextLine]) -> (String, usize) {
+    let mut text = lines[0].text.clone();
+    let mut consumed = 1;
+
+    for line in lines.iter().skip(1) {
+        let previous = &lines[consumed - 1];
+        if tabular_line(line) || !paragraph_continuation(previous, line) {
+            break;
+        }
+        push_paragraph_line(&mut text, &line.text);
+        consumed += 1;
+    }
+
+    (text, consumed)
+}
+
+fn paragraph_continuation(previous: &TextLine, candidate: &TextLine) -> bool {
+    let gap = previous.y - candidate.y;
+    let line_height = previous.font_size.max(candidate.font_size).max(8.0);
+    let indentation_delta = (candidate.x - previous.x).abs();
+    gap > 0.0 && gap <= line_height * 1.8 && indentation_delta <= line_height * 2.0
+}
+
+fn push_paragraph_line(text: &mut String, line: &str) {
+    if !text.ends_with(' ') && !line.starts_with(' ') {
+        text.push(' ');
+    }
+    text.push_str(line);
 }
 
 fn parse_table(lines: &[TextLine]) -> Option<(Table, usize)> {
@@ -126,6 +157,26 @@ mod tests {
             blocks_from_segments(&segments)[0],
             Block::Paragraph(_)
         ));
+    }
+
+    #[test]
+    fn merges_nearby_lines_into_paragraph() {
+        let segments = vec![
+            segment("This is the first line", 10.0, 100.0),
+            segment("and this continues it.", 10.0, 86.0),
+        ];
+
+        let blocks = blocks_from_segments(&segments);
+
+        let Block::Paragraph(paragraph) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(
+            paragraph.content,
+            vec![Inline::Text(
+                "This is the first line and this continues it.".to_string()
+            )]
+        );
     }
 
     fn segment(text: &str, x: f32, y: f32) -> TextSegment {

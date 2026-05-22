@@ -30,6 +30,9 @@ pub fn text_lines(segments: &[TextSegment]) -> Vec<TextLine> {
 pub struct TextLine {
     pub text: String,
     pub cells: Vec<TextSegment>,
+    pub x: f32,
+    pub y: f32,
+    pub font_size: f32,
 }
 
 pub fn estimated_text_width(text: &str, font_size: f32) -> f32 {
@@ -52,9 +55,18 @@ fn group_lines(segments: Vec<TextSegment>) -> Vec<Vec<TextSegment>> {
 
 fn to_text_line(mut cells: Vec<TextSegment>) -> TextLine {
     cells.sort_by(|left, right| left.x.total_cmp(&right.x));
+    let x = cells.first().map(|cell| cell.x).unwrap_or_default();
+    let y = line_y(&cells);
+    let font_size = cells
+        .iter()
+        .map(|cell| cell.font_size)
+        .fold(0.0_f32, f32::max);
     TextLine {
         text: join_line_segments(&cells),
         cells,
+        x,
+        y,
+        font_size,
     }
 }
 
