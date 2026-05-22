@@ -33,6 +33,7 @@ fn render_head(html: &mut String, document: &Document) {
     html.push_str("  <title>");
     render_title(html, document);
     html.push_str("</title>\n");
+    render_default_styles(html);
     html.push_str("</head>\n");
 }
 
@@ -43,6 +44,24 @@ fn render_title(html: &mut String, document: &Document) {
         .as_deref()
         .unwrap_or("toHTML document");
     push_escaped(html, title);
+}
+
+fn render_default_styles(html: &mut String) {
+    html.push_str("  <style>\n");
+    html.push_str(
+        "    body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; line-height: 1.35; color: #111; }\n",
+    );
+    html.push_str("    article { max-width: 960px; margin: 0 auto; }\n");
+    html.push_str("    h1 { font-size: 20px; line-height: 1.2; }\n");
+    html.push_str("    h2 { font-size: 16px; line-height: 1.25; margin-top: 1.4em; }\n");
+    html.push_str("    h3 { font-size: 14px; line-height: 1.25; }\n");
+    html.push_str("    p { margin: 0.45em 0; }\n");
+    html.push_str("    table { border-collapse: collapse; margin: 0.75em 0; width: 100%; }\n");
+    html.push_str(
+        "    th, td { border: 1px solid #777; padding: 3px 5px; vertical-align: top; }\n",
+    );
+    html.push_str("    th { font-weight: 700; background: #f2f2f2; }\n");
+    html.push_str("  </style>\n");
 }
 
 fn render_body(html: &mut String, document: &Document) {
@@ -98,10 +117,10 @@ mod tests {
         assert!(html.starts_with("<!doctype html>\n<html lang=\"en\">"));
         assert!(html.contains("<meta charset=\"utf-8\">"));
         assert!(html.contains("<title>Example</title>"));
+        assert!(html.contains("font-size: 12px"));
         assert!(html.contains("<article>"));
         assert!(html.contains("<h1>Example</h1>"));
         assert!(html.contains("<p>Hello &lt;world&gt;</p>"));
-        assert!(!html.contains("<style"));
         assert!(!html.contains("<script"));
     }
 

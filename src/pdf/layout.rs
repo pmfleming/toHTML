@@ -158,18 +158,26 @@ fn push_paragraph_line(text: &mut String, line: &str) {
 
 fn parse_table(lines: &[TextLine]) -> Option<(Table, usize)> {
     let first = lines.first()?;
-    if !tabular_line(first) {
-        return None;
-    }
-
-    let mut rows = vec![table_row(first, true)];
+    let (reference, first_cells) = table_start(lines)?;
+    let mut rows = vec![table_row(&first_cells, true)];
     let mut consumed = 1;
+    let mut previous = first;
     for line in lines.iter().skip(1) {
-        if !aligned_table_row(first, line) {
+        let cells = table_cells(line);
+        if aligned_table_row(&reference, &cells) {
+            rows.push(table_row(&cells, false));
+            consumed += 1;
+            previous = line;
+            continue;
+        }
+        if extend_wrapped_table_cell(&reference, previous, line, &mut rows) {
+            consumed += 1;
+            previous = line;
+            continue;
+        }
+        if !aligned_table_row(&reference, &cells) {
             break;
         }
-        rows.push(table_row(line, false));
-        consumed += 1;
     }
 
     (rows.len() >= 2).then_some((
@@ -182,28 +190,186 @@ fn parse_table(lines: &[TextLine]) -> Option<(Table, usize)> {
     ))
 }
 
+fn table_start(lines: &[TextLine]) -> Option<(Vec<f32>, Vec<TableTextCell>)> {
+    let first = lines.first()?;
+    let first_cells = table_cells(first);
+    if tabular_cells(&first_cells) {
+        return Some((column_positions(&first_cells), first_cells));
+    }
+
+    let next_cells = table_cells(lines.get(1)?);
+    if message_item_header(first) && tabular_cells(&next_cells) {
+        return Some((
+            column_positions(&next_cells),
+            synthetic_message_item_header(&next_cells),
+        ));
+    }
+
+    None
+}
+
 fn tabular_line(line: &TextLine) -> bool {
-    line.cells.len() >= 2
-        && line
-            .cells
+    tabular_cells(&table_cells(line))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TableTextCell {
+    text: String,
+    x: f32,
+    width: f32,
+}
+
+fn table_cells(line: &TextLine) -> Vec<TableTextCell> {
+    let mut cells: Vec<TableTextCell> = Vec::new();
+    let gap_threshold = table_cell_gap(line.font_size);
+    for segment in &line.cells {
+        let Some(current) = cells.last_mut() else {
+            cells.push(TableTextCell {
+                text: segment.text.clone(),
+                x: segment.x,
+                width: segment.width,
+            });
+            continue;
+        };
+
+        let current_end = current.x + current.width;
+        if segment.x - current_end >= gap_threshold {
+            cells.push(TableTextCell {
+                text: segment.text.clone(),
+                x: segment.x,
+                width: segment.width,
+            });
+        } else {
+            append_text(&mut current.text, &segment.text);
+            current.width = (segment.x + segment.width - current.x).max(current.width);
+        }
+    }
+    cells
+}
+
+fn table_cell_gap(font_size: f32) -> f32 {
+    (font_size.max(8.0) * 1.75).max(18.0)
+}
+
+fn tabular_cells(cells: &[TableTextCell]) -> bool {
+    cells.len() >= 2
+        && cells
             .windows(2)
-            .all(|cells| cells[1].x - cells[0].x >= 36.0)
+            .all(|cells| cells[1].x - cells[0].x >= 24.0)
 }
 
-fn aligned_table_row(reference: &TextLine, candidate: &TextLine) -> bool {
-    tabular_line(candidate)
-        && reference.cells.len() == candidate.cells.len()
+fn column_positions(cells: &[TableTextCell]) -> Vec<f32> {
+    cells.iter().map(|cell| cell.x).collect()
+}
+
+fn aligned_table_row(reference: &[f32], candidate: &[TableTextCell]) -> bool {
+    tabular_cells(candidate)
+        && reference.len() == candidate.len()
         && reference
-            .cells
             .iter()
-            .zip(&candidate.cells)
-            .all(|(left, right)| (left.x - right.x).abs() <= 8.0)
+            .zip(candidate)
+            .all(|(left, right)| (*left - right.x).abs() <= 12.0)
 }
 
-fn table_row(line: &TextLine, header: bool) -> TableRow {
+fn extend_wrapped_table_cell(
+    reference: &[f32],
+    previous: &TextLine,
+    line: &TextLine,
+    rows: &mut [TableRow],
+) -> bool {
+    if rows.is_empty() || tabular_line(line) || is_list_line(line) {
+        return false;
+    }
+    let gap = previous.y - line.y;
+    let line_height = previous.font_size.max(line.font_size).max(8.0);
+    if gap <= 0.0 || gap > line_height * 2.5 {
+        return false;
+    }
+
+    let Some(row) = rows.last_mut() else {
+        return false;
+    };
+    let Some(target_index) = continuation_cell_index(reference, line.x)
+        .filter(|index| *index > 0)
+        .or_else(|| fallback_continuation_index(row, line))
+    else {
+        return false;
+    };
+
+    let Some(cell) = row.cells.get_mut(target_index) else {
+        return false;
+    };
+    append_cell_text(cell, &line.text);
+    true
+}
+
+fn continuation_cell_index(reference: &[f32], x: f32) -> Option<usize> {
+    reference
+        .iter()
+        .enumerate()
+        .filter(|(_, column_x)| x + 12.0 >= **column_x)
+        .min_by(|(_, left), (_, right)| (x - **left).abs().total_cmp(&(x - **right).abs()))
+        .map(|(index, _)| index)
+}
+
+fn fallback_continuation_index(row: &TableRow, line: &TextLine) -> Option<usize> {
+    let text = line.text.trim_start();
+    if text.is_empty()
+        || text.contains(':')
+        || text
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit() || ch.is_ascii_uppercase())
+    {
+        return None;
+    }
+    row.cells.len().checked_sub(1).filter(|index| *index > 0)
+}
+
+fn message_item_header(line: &TextLine) -> bool {
+    let text = line.text.as_str();
+    text.contains("MessageItem") && text.contains("<XMLTag>") && text.contains("Mult.")
+}
+
+fn synthetic_message_item_header(reference: &[TableTextCell]) -> Vec<TableTextCell> {
+    if !matches!(reference.len(), 4..=6) {
+        return reference.to_vec();
+    }
+
+    let labels = match reference.len() {
+        4 => vec!["MessageItem", "<XMLTag>", "Mult.", "Represent./Type"],
+        5 => vec![
+            "Index Or",
+            "MessageItem",
+            "<XMLTag>",
+            "Mult.",
+            "Represent./Type",
+        ],
+        6 => vec![
+            "Index",
+            "Or",
+            "MessageItem",
+            "<XMLTag>",
+            "Mult.",
+            "Represent./Type",
+        ],
+        _ => unreachable!(),
+    };
+
+    reference
+        .iter()
+        .zip(labels)
+        .map(|(cell, label)| TableTextCell {
+            text: label.to_string(),
+            x: cell.x,
+            width: cell.width,
+        })
+        .collect()
+}
+
+fn table_row(cells: &[TableTextCell], header: bool) -> TableRow {
     TableRow {
-        cells: line
-            .cells
+        cells: cells
             .iter()
             .map(|cell| TableCell {
                 content: vec![Inline::Text(cell.text.clone())],
@@ -216,6 +382,21 @@ fn table_row(line: &TextLine, header: bool) -> TableRow {
             .collect(),
         source: None,
     }
+}
+
+fn append_cell_text(cell: &mut TableCell, text: &str) {
+    if let Some(Inline::Text(existing)) = cell.content.last_mut() {
+        append_text(existing, text);
+    } else {
+        cell.content.push(Inline::Text(text.to_string()));
+    }
+}
+
+fn append_text(existing: &mut String, next: &str) {
+    if !existing.ends_with(' ') && !next.starts_with(' ') {
+        existing.push(' ');
+    }
+    existing.push_str(next);
 }
 
 fn table_alignment(text: &str) -> Option<TableAlignment> {

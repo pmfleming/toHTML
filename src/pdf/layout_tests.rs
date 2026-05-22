@@ -23,6 +23,97 @@ fn converts_aligned_lines_to_table() {
 }
 
 #[test]
+fn clusters_nearby_words_inside_table_cells() {
+    let segments = vec![
+        segment("Index", 10.0, 100.0),
+        segment("Or", 45.0, 100.0),
+        segment("MessageItem", 120.0, 100.0),
+        segment("1.1", 10.0, 84.0),
+        segment("MessageIdentification", 120.0, 84.0),
+    ];
+
+    let table = first_table(blocks_from_segments(&segments));
+
+    assert_eq!(
+        table.rows[0].cells[0].content,
+        vec![Inline::Text("Index Or".to_string())]
+    );
+    assert_eq!(table.rows[0].cells.len(), 2);
+}
+
+#[test]
+fn keeps_wrapped_table_cell_text_inside_the_table() {
+    let segments = vec![
+        segment("Definition:", 10.0, 100.0),
+        segment("Unique identification, as assigned by", 120.0, 100.0),
+        segment("a sending party.", 120.0, 86.0),
+        segment("Occurrence:", 10.0, 70.0),
+        segment("[1..1]", 120.0, 70.0),
+    ];
+
+    let table = first_table(blocks_from_segments(&segments));
+
+    assert_eq!(table.rows.len(), 2);
+    assert_eq!(
+        table.rows[0].cells[1].content,
+        vec![Inline::Text(
+            "Unique identification, as assigned by a sending party.".to_string()
+        )]
+    );
+}
+
+#[test]
+fn uses_message_item_header_text_for_following_rows() {
+    let segments = vec![
+        segment(
+            "Index Or MessageItem <XMLTag> Mult. Represent./Type",
+            10.0,
+            100.0,
+        ),
+        segment("2.1", 10.0, 84.0),
+        segment("PaymentInformationIdentification", 120.0, 84.0),
+        segment("<PmtInfId>", 340.0, 84.0),
+        segment("[1..1]", 430.0, 84.0),
+        segment("Text", 520.0, 84.0),
+    ];
+
+    let table = first_table(blocks_from_segments(&segments));
+
+    assert_eq!(
+        table.rows[0].cells[0].content,
+        vec![Inline::Text("Index Or".to_string())]
+    );
+    assert_eq!(
+        table.rows[0].cells[4].content,
+        vec![Inline::Text("Represent./Type".to_string())]
+    );
+    assert_eq!(
+        table.rows[1].cells[1].content,
+        vec![Inline::Text("PaymentInformationIdentification".to_string())]
+    );
+}
+
+#[test]
+fn appends_lowercase_wrapped_text_to_last_table_cell() {
+    let segments = vec![
+        segment("Definition:", 10.0, 100.0),
+        segment("Unique identification", 120.0, 100.0),
+        segment("within the message.", 10.0, 86.0),
+        segment("Data Type:", 10.0, 70.0),
+        segment("Max35Text", 120.0, 70.0),
+    ];
+
+    let table = first_table(blocks_from_segments(&segments));
+
+    assert_eq!(
+        table.rows[0].cells[1].content,
+        vec![Inline::Text(
+            "Unique identification within the message.".to_string()
+        )]
+    );
+}
+
+#[test]
 fn marks_numeric_table_cells_as_right_aligned() {
     let segments = vec![
         segment("Name", 10.0, 100.0),

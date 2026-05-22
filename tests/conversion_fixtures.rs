@@ -18,7 +18,7 @@ fn markdown_fixture_renders_gfm_features() {
             "<input type=\"checkbox\" disabled>",
             "<table>",
             "<th>Name</th>",
-            "<td>3</td>",
+            "<td style=\"text-align: right\">3</td>",
             "<del>old</del>",
             "<strong>new</strong>",
         ],

@@ -1,6 +1,6 @@
-use crate::{Table, TableCell};
+use crate::{Table, TableAlignment, TableCell};
 
-use crate::html::attrs::{push_end_tag, push_number_attr};
+use crate::html::attrs::{push_attr, push_end_tag, push_number_attr};
 use crate::html::inlines::render_inlines;
 
 pub(super) fn render_table(html: &mut String, table: &Table) {
@@ -30,6 +30,9 @@ fn render_table_cell(html: &mut String, cell: &TableCell) {
     html.push_str(tag);
     push_number_attr(html, "colspan", span_attr(cell.colspan));
     push_number_attr(html, "rowspan", span_attr(cell.rowspan));
+    if let Some(align) = cell.align {
+        push_attr(html, "style", alignment_style(align));
+    }
     html.push('>');
     render_inlines(html, &cell.content);
     push_end_tag(html, tag);
@@ -37,4 +40,12 @@ fn render_table_cell(html: &mut String, cell: &TableCell) {
 
 fn span_attr(span: u16) -> Option<u64> {
     (span > 1).then_some(u64::from(span))
+}
+
+fn alignment_style(align: TableAlignment) -> &'static str {
+    match align {
+        TableAlignment::Left => "text-align: left",
+        TableAlignment::Center => "text-align: center",
+        TableAlignment::Right => "text-align: right",
+    }
 }
