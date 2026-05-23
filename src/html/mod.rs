@@ -60,19 +60,35 @@ fn render_default_styles(html: &mut String) {
       background: #fff;
       box-shadow: 0 1px 5px rgb(60 64 67 / 18%);
     }
-    .pdf-visual-document {
+    .pdf-reconstructed-document {
       width: 100%;
       margin: 0;
-      padding: 0;
+      padding: 24px 0;
+      overflow-x: auto;
+      background: #e5e7eb;
     }
-    .pdf-visual-source {
-      display: block;
-      width: 100vw;
-      height: 100vh;
-      min-height: 100vh;
-      border: 0;
+    .pdf-recreated-page {
+      position: relative;
+      box-sizing: content-box;
+      margin: 0 auto 24px;
+      overflow: hidden;
       background: #fff;
-      box-shadow: none;
+      box-shadow: 0 1px 5px rgb(60 64 67 / 24%);
+    }
+    .pdf-text-fragment {
+      position: absolute;
+      box-sizing: border-box;
+      display: block;
+      overflow: visible;
+      white-space: pre;
+      color: #111827;
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1;
+      transform-origin: left top;
+    }
+    .pdf-shape {
+      position: absolute;
+      box-sizing: border-box;
     }
     .pdf-extracted-content {
       width: min(100%, 8.5in);
@@ -191,8 +207,8 @@ fn render_title(html: &mut String, document: &Document) {
 }
 
 fn render_body(html: &mut String, document: &Document) {
-    if document.metadata.visual_source.is_some() {
-        render_visual_body(html, document);
+    if document.metadata.visual_html.is_some() {
+        render_reconstructed_body(html, document);
         return;
     }
 
@@ -205,17 +221,12 @@ fn render_body(html: &mut String, document: &Document) {
     html.push_str("</body>\n");
 }
 
-fn render_visual_body(html: &mut String, document: &Document) {
+fn render_reconstructed_body(html: &mut String, document: &Document) {
     html.push_str("<body>\n");
-    html.push_str("  <main class=\"pdf-visual-document\">\n");
-    render_visual_source(
-        html,
-        document
-            .metadata
-            .visual_source
-            .as_deref()
-            .unwrap_or_default(),
-    );
+    html.push_str("  <main class=\"pdf-reconstructed-document\">\n");
+    if let Some(visual_html) = &document.metadata.visual_html {
+        html.push_str(visual_html);
+    }
     html.push_str("    <details class=\"pdf-extracted-content\">\n");
     html.push_str("      <summary>Extracted HTML content</summary>\n");
     html.push_str("      <article>\n");
@@ -226,16 +237,6 @@ fn render_visual_body(html: &mut String, document: &Document) {
     html.push_str("  </main>\n");
     render_warnings(html, &document.warnings);
     html.push_str("</body>\n");
-}
-
-fn render_visual_source(html: &mut String, source: &str) {
-    html.push_str("    <object class=\"pdf-visual-source\" type=\"application/pdf\" data=\"");
-    escape::push_attr_escaped(html, source);
-    html.push_str("#toolbar=0&amp;navpanes=0\">\n");
-    html.push_str("      <p><a href=\"");
-    escape::push_attr_escaped(html, source);
-    html.push_str("\">Open source PDF</a></p>\n");
-    html.push_str("    </object>\n");
 }
 
 fn render_article_header(html: &mut String, document: &Document) {
@@ -334,10 +335,13 @@ mod tests {
     }
 
     #[test]
-    fn renders_pdf_visual_source_as_primary_surface() {
+    fn renders_pdf_reconstructed_html_as_primary_surface() {
         let document = Document {
             metadata: crate::DocumentMetadata {
-                visual_source: Some("../input/example.pdf".to_string()),
+                visual_html: Some(
+                    "    <section class=\"pdf-recreated-page\"><span>Placed text</span></section>\n"
+                        .to_string(),
+                ),
                 ..crate::DocumentMetadata::default()
             },
             blocks: vec![Block::paragraph("Extracted text")],
@@ -346,9 +350,10 @@ mod tests {
 
         let html = render_html(&document);
 
-        assert!(html.contains("class=\"pdf-visual-source\""));
-        assert!(html.contains("data=\"../input/example.pdf#toolbar=0&amp;navpanes=0\""));
+        assert!(html.contains("class=\"pdf-reconstructed-document\""));
+        assert!(html.contains("Placed text"));
         assert!(html.contains("<details class=\"pdf-extracted-content\">"));
         assert!(html.contains("Extracted text"));
+        assert!(!html.contains("application/pdf"));
     }
 }

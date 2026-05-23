@@ -1,5 +1,6 @@
 mod cmap;
 mod fonts;
+mod graphics;
 mod hex;
 mod layout;
 #[cfg(test)]
@@ -10,6 +11,7 @@ mod postprocess;
 mod streams;
 mod struct_tree;
 mod text;
+mod visual;
 
 use crate::ConvertError;
 use crate::{Block, ConversionWarning, Document, PageBreak};
@@ -38,16 +40,30 @@ pub fn pdf_to_document(bytes: &[u8]) -> Result<Document, ConvertError> {
     );
 
     let total_pages = extraction.pages.len();
+    let mut visual_pages = Vec::new();
     for (page_index, page) in extraction.pages.iter().enumerate() {
         let mut page_blocks = Vec::new();
+        let mut page_segments = Vec::new();
+        let mut page_shapes = Vec::new();
         for stream in &page.streams {
+            page_shapes.extend(graphics::extract_rectangles(stream));
             let segments = text::extract_segments_with_fonts(
                 stream,
                 &font_cmaps,
                 &font_metrics,
                 &struct_roles,
             );
+            page_segments.extend(segments.iter().cloned());
             page_blocks.extend(layout::blocks_from_segments(&segments));
+        }
+        if !page_segments.is_empty() || !page_shapes.is_empty() {
+            visual_pages.push(visual::VisualPage {
+                page_number: page.page_number,
+                width: page.width,
+                height: page.height,
+                segments: page_segments,
+                shapes: page_shapes,
+            });
         }
         if page_blocks.is_empty() {
             page_blocks.push(Block::PagePlaceholder(PagePlaceholder {
@@ -85,6 +101,7 @@ pub fn pdf_to_document(bytes: &[u8]) -> Result<Document, ConvertError> {
     }
     add_image_text_warning(&mut document, bytes);
     links::apply_detected_links(&mut document.blocks, &mut document.warnings, bytes);
+    document.metadata.visual_html = visual::render_pages(&visual_pages);
 
     Ok(document)
 }
@@ -186,6 +203,12 @@ endobj
 
         assert!(matches!(&document.blocks[0], Block::Paragraph(_)));
         assert!(crate::render_html(&document).contains("Hello PDF"));
+        assert!(document
+            .metadata
+            .visual_html
+            .as_deref()
+            .unwrap_or_default()
+            .contains("pdf-text-fragment"));
     }
 
     #[test]

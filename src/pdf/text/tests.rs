@@ -141,6 +141,18 @@ fn applies_flipped_current_transformation_matrix_to_line_order() {
 }
 
 #[test]
+fn applies_current_transformation_matrix_scale_to_font_metrics() {
+    let stream = b"q 0.125 0 0 0.125 0 0 cm BT /F1 96 Tf 576 576 Td (Scaled) Tj ET Q";
+
+    let segments =
+        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+
+    assert!((segments[0].font_size - 12.0).abs() < 0.1);
+    assert!((segments[0].width - 32.4).abs() < 0.1);
+    assert!((segments[0].x - 72.0).abs() < 0.1);
+}
+
+#[test]
 fn records_text_matrix_rotation() {
     let stream = b"BT 0 1 -1 0 100 100 Tm (Rotated) Tj ET";
 

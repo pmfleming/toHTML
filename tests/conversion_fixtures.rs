@@ -235,12 +235,17 @@ fn pdf_fixture_removes_repeated_page_header() {
 
     let document = pdf_to_document(pdf.as_bytes()).unwrap();
     let html = render_html(&document);
-    let header_count = html.matches("Repeated Header").count();
+    let extracted = html
+        .split_once("<details class=\"pdf-extracted-content\">")
+        .map(|(_, extracted)| extracted)
+        .unwrap_or(&html);
+    let header_count = extracted.matches("Repeated Header").count();
 
     assert!(
         header_count <= 1,
-        "header should be removed; html was: {html}"
+        "header should be removed from extracted content; html was: {html}"
     );
+    assert!(html.matches("Repeated Header").count() > 1);
     assert!(html.contains("Body One"));
     assert!(html.contains("Body Four"));
 }

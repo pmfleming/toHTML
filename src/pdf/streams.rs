@@ -18,6 +18,8 @@ pub struct PdfPageExtraction {
 pub struct PageContent {
     pub page_number: u32,
     pub streams: Vec<Vec<u8>>,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
 }
 
 pub fn document_pages(bytes: &[u8]) -> Result<PdfPageExtraction, ConvertError> {
@@ -101,8 +103,14 @@ fn page_content(
         return Ok(PageContent {
             page_number,
             streams: Vec::new(),
+            width: None,
+            height: None,
         });
     };
+    let (width, height) = page
+        .dictionary()
+        .and_then(media_box_size)
+        .unwrap_or((None, None));
     let content_refs = page
         .dictionary()
         .and_then(|dictionary| dictionary.get("Contents"))
@@ -117,7 +125,34 @@ fn page_content(
     Ok(PageContent {
         page_number,
         streams,
+        width,
+        height,
     })
+}
+
+fn media_box_size(dictionary: &super::object::PdfDictionary) -> Option<(Option<f32>, Option<f32>)> {
+    let box_values = dictionary.array("MediaBox")?;
+    let [left, bottom, right, top] = box_values else {
+        return None;
+    };
+    let width = pdf_number(right)? - pdf_number(left)?;
+    let height = pdf_number(top)? - pdf_number(bottom)?;
+    Some((positive_dimension(width), positive_dimension(height)))
+}
+
+fn positive_dimension(value: f32) -> Option<f32> {
+    value
+        .is_finite()
+        .then_some(value.abs())
+        .filter(|value| *value > 0.0)
+}
+
+fn pdf_number(value: &PdfValue) -> Option<f32> {
+    match value {
+        PdfValue::Integer(value) => Some(*value as f32),
+        PdfValue::Real(value) => Some(*value),
+        _ => None,
+    }
 }
 
 fn content_references(value: &PdfValue) -> Vec<PdfReference> {

@@ -16,6 +16,8 @@ pub(super) struct TextState {
     rendering_mode: i32,
     ctm: Matrix,
     text_rotation: f32,
+    text_scale_x: f32,
+    text_scale_y: f32,
     pub font_name: Option<String>,
 }
 
@@ -35,6 +37,8 @@ impl Default for TextState {
             rendering_mode: 0,
             ctm: Matrix::identity(),
             text_rotation: 0.0,
+            text_scale_x: 1.0,
+            text_scale_y: 1.0,
             font_name: None,
         }
     }
@@ -80,6 +84,14 @@ impl Matrix {
     fn rotation_degrees(self) -> f32 {
         self.b.atan2(self.a).to_degrees()
     }
+
+    fn scale_x(self) -> f32 {
+        self.a.hypot(self.b).max(0.01)
+    }
+
+    fn scale_y(self) -> f32 {
+        self.c.hypot(self.d).max(0.01)
+    }
 }
 
 impl TextState {
@@ -88,17 +100,25 @@ impl TextState {
         self.y = 0.0;
         self.line_x = 0.0;
         self.line_y = 0.0;
+        self.text_scale_x = self.ctm.scale_x();
+        self.text_scale_y = self.ctm.scale_y();
     }
 
     pub fn segment(&self, text: String, width: Option<f32>) -> TextSegment {
         let width = width.unwrap_or_else(|| estimated_text_width(&text, self.font_size));
-        TextSegment::new(text, self.x, self.y + self.text_rise, self.font_size, width)
-            .with_rotation(self.text_rotation)
+        TextSegment::new(
+            text,
+            self.x,
+            self.y + self.text_rise * self.text_scale_y,
+            self.font_size * self.text_scale_y,
+            width * self.text_scale_x,
+        )
+        .with_rotation(self.text_rotation)
     }
 
     pub fn text_advance(&self, text: &str, width: f32) -> f32 {
         let spacing = self.spacing_advance(text);
-        (width + spacing) * (self.horizontal_scaling / 100.0).max(0.01)
+        (width + spacing) * (self.horizontal_scaling / 100.0).max(0.01) * self.text_scale_x
     }
 
     pub fn advance_text(&mut self, text: &str, width: f32) {
@@ -108,7 +128,7 @@ impl TextState {
     pub fn apply_tj_adjustment(&mut self, adjustment: f32) {
         // TJ adjustments are expressed in 1/1000 em; negative values move x forward.
         let horizontal = self.horizontal_scaling / 100.0;
-        self.x += -adjustment / 1000.0 * self.font_size * horizontal.max(0.01);
+        self.x += -adjustment / 1000.0 * self.font_size * horizontal.max(0.01) * self.text_scale_x;
     }
 
     pub fn set_font_size(&mut self, size: f32) {
@@ -170,6 +190,8 @@ impl TextState {
         self.line_x = combined.e;
         self.line_y = combined.f;
         self.text_rotation = combined.rotation_degrees();
+        self.text_scale_x = combined.scale_x();
+        self.text_scale_y = combined.scale_y();
     }
 
     pub fn concat_matrix(&mut self, values: [f32; 6]) {
@@ -182,6 +204,8 @@ impl TextState {
             f: values[5],
         };
         self.ctm = self.ctm.multiply(matrix);
+        self.text_scale_x = self.ctm.scale_x();
+        self.text_scale_y = self.ctm.scale_y();
     }
 
     pub fn next_line(&mut self) {
