@@ -1,5 +1,29 @@
-use super::graphics::RectShape;
+mod diagrams;
+mod formulas;
+mod render;
+#[cfg(test)]
+mod tests;
+mod text_layer;
+mod text_repair;
+
+use super::graphics::{PathCommand, RectShape};
 use super::text::TextSegment;
+
+use diagrams::{
+    diagram_overlays, is_iec_flowchart_page, is_iec_formula_definition_page,
+    path_intersects_diagram, render_diagram_overlay, shape_intersects_diagram,
+};
+use formulas::{
+    formula_overlays, path_intersects_formula, render_formula_overlay, shape_intersects_formula,
+};
+use render::{
+    is_page_background_shape, path_points, push_pt, render_image, render_link, render_path,
+    render_shape,
+};
+use text_layer::{
+    fill_sign_placeholder, line_width, render_fill_sign_line_cells, render_fragment,
+    render_line_cells, render_line_fragment, should_render_line_cells,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct VisualPage {
@@ -8,37 +32,183 @@ pub(super) struct VisualPage {
     pub height: Option<f32>,
     pub segments: Vec<TextSegment>,
     pub shapes: Vec<RectShape>,
+    pub images: Vec<VisualImage>,
+    pub paths: Vec<VisualPath>,
+    pub links: Vec<VisualLink>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct VisualImage {
+    pub src: String,
+    pub mask_src: Option<String>,
+    pub alt: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct VisualPath {
+    pub commands: Vec<PathCommand>,
+    pub fill: Option<String>,
+    pub stroke: Option<String>,
+    pub stroke_width: f32,
+    pub stroke_dasharray: Option<Vec<f32>>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct VisualLink {
+    pub href: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 pub(super) fn render_pages(pages: &[VisualPage]) -> Option<String> {
     let mut html = String::new();
     let mut emitted = false;
 
-    for page in pages
-        .iter()
-        .filter(|page| !page.segments.is_empty() || !page.shapes.is_empty())
-    {
+    for page in pages.iter().filter(|page| {
+        !page.segments.is_empty()
+            || !page.shapes.is_empty()
+            || !page.images.is_empty()
+            || !page.paths.is_empty()
+            || !page.links.is_empty()
+    }) {
         emitted = true;
         let geometry = PageGeometry::from_page(page);
-        html.push_str("    <section class=\"pdf-recreated-page\" data-page=\"");
+        let line_fragments = should_render_line_fragments(page);
+        html.push_str("    <section class=\"pdf-recreated-page");
+        if line_fragments {
+            html.push_str(" pdf-prose-page");
+        }
+        html.push_str("\" data-page=\"");
         html.push_str(&page.page_number.to_string());
         html.push_str("\" style=\"width:");
         push_pt(&mut html, geometry.width);
         html.push_str(";height:");
         push_pt(&mut html, geometry.height);
         html.push_str("\">\n");
+        let formulas = formula_overlays(page);
+        let diagrams = diagram_overlays(page);
+        let flowchart_page = is_iec_flowchart_page(page);
+        let suppress_white_text_color = flowchart_page || !diagrams.is_empty();
 
         for shape in &page.shapes {
-            render_shape(&mut html, shape, geometry);
+            if is_page_background_shape(shape, geometry)
+                && !shape_intersects_formula(shape, geometry, formulas)
+                && !shape_intersects_diagram(shape, geometry, diagrams)
+            {
+                render_shape(&mut html, shape, geometry, flowchart_page);
+            }
         }
-        for segment in &page.segments {
-            render_fragment(&mut html, segment, geometry);
+        for image in &page.images {
+            render_image(&mut html, image, geometry);
+        }
+        for shape in &page.shapes {
+            if is_page_background_shape(shape, geometry) {
+                continue;
+            }
+            if !shape_intersects_formula(shape, geometry, formulas)
+                && !shape_intersects_diagram(shape, geometry, diagrams)
+            {
+                render_shape(&mut html, shape, geometry, flowchart_page);
+            }
+        }
+        for diagram in diagrams {
+            render_diagram_overlay(&mut html, diagram);
+        }
+        if line_fragments {
+            for line in super::text::text_lines(&page.segments) {
+                if line
+                    .cells
+                    .iter()
+                    .any(|cell| fill_sign_placeholder(&cell.text))
+                {
+                    render_fill_sign_line_cells(
+                        &mut html,
+                        &line,
+                        geometry,
+                        suppress_white_text_color,
+                    );
+                } else if should_render_line_cells(&line) {
+                    render_line_cells(&mut html, &line, geometry, suppress_white_text_color);
+                } else {
+                    render_line_fragment(&mut html, &line, geometry, suppress_white_text_color);
+                }
+            }
+        } else {
+            for segment in &page.segments {
+                render_fragment(&mut html, segment, geometry, suppress_white_text_color);
+            }
+        }
+        for path in &page.paths {
+            if !path_intersects_formula(path, geometry, formulas)
+                && !path_intersects_diagram(path, geometry, diagrams)
+            {
+                render_path(&mut html, path, geometry);
+            }
+        }
+        for formula in formulas {
+            render_formula_overlay(&mut html, formula);
+        }
+        for link in &page.links {
+            render_link(&mut html, link, geometry);
         }
 
         html.push_str("    </section>\n");
     }
 
     emitted.then_some(html)
+}
+
+fn should_render_line_fragments(page: &VisualPage) -> bool {
+    if is_iec_formula_definition_page(page) {
+        return true;
+    }
+
+    if has_large_image(page)
+        || page
+            .segments
+            .iter()
+            .any(|segment| normalized_rotation(segment.rotation).abs() >= 0.5)
+    {
+        return false;
+    }
+
+    let lines = super::text::text_lines(&page.segments);
+    if lines.len() < 20 {
+        return false;
+    }
+
+    let cell_count = lines.iter().map(|line| line.cells.len()).sum::<usize>();
+    let page_width = page.width.unwrap_or(612.0);
+    let long_lines = lines
+        .iter()
+        .filter(|line| line_width(line) >= page_width * 0.55)
+        .count();
+    cell_count >= lines.len() * 2 && long_lines >= 12
+}
+
+fn has_large_image(page: &VisualPage) -> bool {
+    let page_area = page.width.unwrap_or(612.0) * page.height.unwrap_or(792.0);
+    page_area > 0.0
+        && page
+            .images
+            .iter()
+            .any(|image| image.width * image.height >= page_area * 0.08)
+}
+
+fn normalized_rotation(rotation: f32) -> f32 {
+    let mut value = rotation % 360.0;
+    if value > 180.0 {
+        value -= 360.0;
+    } else if value <= -180.0 {
+        value += 360.0;
+    }
+    value
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,6 +229,17 @@ impl PageGeometry {
                     .iter()
                     .map(|shape| shape.x + shape.width.max(0.0)),
             )
+            .chain(
+                page.images
+                    .iter()
+                    .map(|image| image.x + image.width.max(0.0)),
+            )
+            .chain(
+                page.paths
+                    .iter()
+                    .flat_map(|path| path_points(&path.commands).map(|point| point.0)),
+            )
+            .chain(page.links.iter().map(|link| link.x + link.width.max(0.0)))
             .fold(0.0_f32, f32::max);
         let max_y = page
             .segments
@@ -69,12 +250,30 @@ impl PageGeometry {
                     .iter()
                     .map(|shape| shape.y + shape.height.max(0.0)),
             )
+            .chain(
+                page.images
+                    .iter()
+                    .map(|image| image.y + image.height.max(0.0)),
+            )
+            .chain(
+                page.paths
+                    .iter()
+                    .flat_map(|path| path_points(&path.commands).map(|point| point.1)),
+            )
+            .chain(page.links.iter().map(|link| link.y + link.height.max(0.0)))
             .fold(0.0_f32, f32::max);
         let min_x = page
             .segments
             .iter()
             .map(|segment| segment.x)
             .chain(page.shapes.iter().map(|shape| shape.x))
+            .chain(page.images.iter().map(|image| image.x))
+            .chain(
+                page.paths
+                    .iter()
+                    .flat_map(|path| path_points(&path.commands).map(|point| point.0)),
+            )
+            .chain(page.links.iter().map(|link| link.x))
             .fold(f32::INFINITY, f32::min)
             .min(0.0);
 
@@ -89,179 +288,5 @@ impl PageGeometry {
                 .ceil(),
             min_x,
         }
-    }
-}
-
-fn render_shape(html: &mut String, shape: &RectShape, geometry: PageGeometry) {
-    let left = (shape.x - geometry.min_x).max(0.0);
-    let top = (geometry.height - shape.y - shape.height).max(0.0);
-    let width = shape.width.max(0.0);
-    let height = shape.height.max(0.0);
-    if left > geometry.width || top > geometry.height || width < 0.25 || height < 0.25 {
-        return;
-    }
-
-    html.push_str("      <div class=\"pdf-shape\" style=\"left:");
-    push_pt(html, left);
-    html.push_str(";top:");
-    push_pt(html, top);
-    html.push_str(";width:");
-    push_pt(html, width.min(geometry.width - left));
-    html.push_str(";height:");
-    push_pt(html, height.min(geometry.height - top));
-    if let Some(fill) = &shape.fill {
-        html.push_str(";background:");
-        push_css_color(html, fill);
-    }
-    if let Some(stroke) = &shape.stroke {
-        html.push_str(";border:0.75pt solid ");
-        push_css_color(html, stroke);
-    }
-    html.push_str("\"></div>\n");
-}
-
-fn render_fragment(html: &mut String, segment: &TextSegment, geometry: PageGeometry) {
-    let font_size = segment.font_size.clamp(4.0, 48.0);
-    let width = segment.width.max(font_size * 0.5);
-    let left = (segment.x - geometry.min_x).max(0.0);
-    let top = (geometry.height - segment.y - font_size).max(0.0);
-    let rotation = normalized_rotation(segment.rotation);
-    if left > geometry.width || top > geometry.height {
-        return;
-    }
-
-    html.push_str("      <span class=\"pdf-text-fragment\" style=\"left:");
-    push_pt(html, left);
-    html.push_str(";top:");
-    push_pt(html, top);
-    html.push_str(";font-size:");
-    push_pt(html, font_size);
-    html.push_str(";width:");
-    push_pt(html, width.min(geometry.width - left));
-    html.push_str(";height:");
-    push_pt(html, font_size * 1.12);
-    if rotation.abs() >= 0.5 {
-        html.push_str(";transform:rotate(");
-        push_number(html, rotation);
-        html.push_str("deg)");
-    }
-    html.push_str("\">");
-    push_escaped(html, &segment.text);
-    html.push_str("</span>\n");
-}
-
-fn normalized_rotation(rotation: f32) -> f32 {
-    let mut rotation = rotation % 360.0;
-    if rotation > 180.0 {
-        rotation -= 360.0;
-    } else if rotation < -180.0 {
-        rotation += 360.0;
-    }
-    rotation
-}
-
-fn push_pt(html: &mut String, value: f32) {
-    push_number(html, value.max(0.0));
-    html.push_str("pt");
-}
-
-fn push_number(html: &mut String, value: f32) {
-    html.push_str(&format!("{value:.2}"));
-}
-
-fn push_css_color(html: &mut String, value: &str) {
-    if value.len() == 7
-        && value.starts_with('#')
-        && value[1..].chars().all(|ch| ch.is_ascii_hexdigit())
-    {
-        html.push_str(value);
-    }
-}
-
-fn push_escaped(html: &mut String, value: &str) {
-    for ch in value.chars() {
-        match ch {
-            '&' => html.push_str("&amp;"),
-            '<' => html.push_str("&lt;"),
-            '>' => html.push_str("&gt;"),
-            '"' => html.push_str("&quot;"),
-            '\'' => html.push_str("&#39;"),
-            _ => html.push(ch),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn renders_positioned_text_fragments_without_embedding_pdf() {
-        let html = render_pages(&[VisualPage {
-            page_number: 2,
-            width: Some(200.0),
-            height: Some(300.0),
-            segments: vec![TextSegment::new(
-                "Hello <PDF>".to_string(),
-                20.0,
-                240.0,
-                12.0,
-                60.0,
-            )],
-            shapes: Vec::new(),
-        }])
-        .unwrap();
-
-        assert!(html.contains("class=\"pdf-recreated-page\" data-page=\"2\""));
-        assert!(html.contains("left:20.00pt;top:48.00pt;font-size:12.00pt"));
-        assert!(html.contains("Hello &lt;PDF&gt;"));
-        assert!(!html.contains("application/pdf"));
-    }
-
-    #[test]
-    fn preserves_fragment_rotation() {
-        let html = render_pages(&[VisualPage {
-            page_number: 1,
-            width: Some(200.0),
-            height: Some(300.0),
-            segments: vec![
-                TextSegment::new("Sideways".to_string(), 20.0, 240.0, 12.0, 60.0)
-                    .with_rotation(90.0),
-            ],
-            shapes: Vec::new(),
-        }])
-        .unwrap();
-
-        assert!(html.contains("transform:rotate(90.00deg)"));
-    }
-
-    #[test]
-    fn renders_shapes_before_text() {
-        let html = render_pages(&[VisualPage {
-            page_number: 1,
-            width: Some(200.0),
-            height: Some(300.0),
-            segments: vec![TextSegment::new(
-                "Cell".to_string(),
-                20.0,
-                240.0,
-                12.0,
-                24.0,
-            )],
-            shapes: vec![RectShape {
-                x: 10.0,
-                y: 220.0,
-                width: 100.0,
-                height: 30.0,
-                fill: Some("#eeeeee".to_string()),
-                stroke: Some("#000000".to_string()),
-            }],
-        }])
-        .unwrap();
-
-        assert!(html.contains("class=\"pdf-shape\""));
-        assert!(html.find("pdf-shape") < html.find("pdf-text-fragment"));
-        assert!(html.contains("background:#eeeeee"));
-        assert!(html.contains("border:0.75pt solid #000000"));
     }
 }

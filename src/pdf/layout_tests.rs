@@ -36,6 +36,29 @@ fn clusters_nearby_words_inside_table_cells() {
 }
 
 #[test]
+fn repairs_shifted_subset_text_after_table_cell_joining() {
+    let segments = segments(&[
+        ("Label", 10.0, 100.0),
+        ("Value", 180.0, 100.0),
+        ("International Standard", 10.0, 84.0),
+        ("IEC 6", 180.0, 84.0),
+        ("1000", 220.0, 84.0),
+        ("-3-", 260.0, 84.0),
+        ("2 has been prepared by sub", 288.0, 84.0),
+        ("-committee", 455.0, 84.0),
+    ]);
+
+    let table = first_table(blocks_from_segments(&segments));
+
+    assert_cell_text(
+        &table,
+        1,
+        1,
+        "IEC 61000-3-2 has been prepared by sub-committee",
+    );
+}
+
+#[test]
 fn keeps_wrapped_table_cell_text_inside_the_table() {
     let segments = segments(&[
         ("Definition:", 10.0, 100.0),
@@ -387,6 +410,10 @@ fn segment(text: &str, x: f32, y: f32) -> TextSegment {
         width: text.len() as f32 * 6.0,
         rotation: 0.0,
         role: None,
+        color: None,
+        font_family: None,
+        font_weight: None,
+        font_style: None,
     }
 }
 

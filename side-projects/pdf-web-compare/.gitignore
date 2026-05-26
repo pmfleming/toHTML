@@ -1,0 +1,10 @@
+.venv/
+.pip-cache/
+.playwright-browsers/
+node_modules/
+dist/
+reports/
+input/
+output/
+__pycache__/
+*.pyc

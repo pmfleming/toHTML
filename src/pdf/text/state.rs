@@ -15,9 +15,11 @@ pub(super) struct TextState {
     text_rise: f32,
     rendering_mode: i32,
     ctm: Matrix,
+    text_vector: Matrix,
     text_rotation: f32,
     text_scale_x: f32,
     text_scale_y: f32,
+    fill_color: Option<String>,
     pub font_name: Option<String>,
 }
 
@@ -36,9 +38,11 @@ impl Default for TextState {
             text_rise: 0.0,
             rendering_mode: 0,
             ctm: Matrix::identity(),
+            text_vector: Matrix::identity(),
             text_rotation: 0.0,
             text_scale_x: 1.0,
             text_scale_y: 1.0,
+            fill_color: Some("#000000".to_string()),
             font_name: None,
         }
     }
@@ -100,20 +104,23 @@ impl TextState {
         self.y = 0.0;
         self.line_x = 0.0;
         self.line_y = 0.0;
+        self.text_vector = self.ctm;
         self.text_scale_x = self.ctm.scale_x();
         self.text_scale_y = self.ctm.scale_y();
     }
 
     pub fn segment(&self, text: String, width: Option<f32>) -> TextSegment {
         let width = width.unwrap_or_else(|| estimated_text_width(&text, self.font_size));
+        let horizontal = (self.horizontal_scaling / 100.0).max(0.01);
         TextSegment::new(
             text,
             self.x,
             self.y + self.text_rise * self.text_scale_y,
             self.font_size * self.text_scale_y,
-            width * self.text_scale_x,
+            width * horizontal * self.text_scale_x,
         )
         .with_rotation(self.text_rotation)
+        .with_color(self.fill_color.clone())
     }
 
     pub fn text_advance(&self, text: &str, width: f32) -> f32 {
@@ -163,16 +170,28 @@ impl TextState {
         self.rendering_mode = mode;
     }
 
+    pub fn set_fill_gray(&mut self, value: f32) {
+        self.fill_color = Some(gray(value));
+    }
+
+    pub fn set_fill_rgb(&mut self, red: f32, green: f32, blue: f32) {
+        self.fill_color = Some(rgb(red, green, blue));
+    }
+
+    pub fn set_fill_cmyk(&mut self, cyan: f32, magenta: f32, yellow: f32, black: f32) {
+        self.fill_color = Some(cmyk(cyan, magenta, yellow, black));
+    }
+
     pub fn is_visible_text(&self) -> bool {
         !matches!(self.rendering_mode, 3 | 7)
     }
 
     pub fn move_position(&mut self, tx: f32, ty: f32) {
-        let (tx, ty) = self.ctm.transform_vector(tx, ty);
-        self.x += tx;
-        self.y += ty;
-        self.line_x = self.x;
-        self.line_y = self.y;
+        let (tx, ty) = self.transform_text_vector(tx, ty);
+        self.line_x += tx;
+        self.line_y += ty;
+        self.x = self.line_x;
+        self.y = self.line_y;
     }
 
     pub fn set_text_matrix(&mut self, values: [f32; 6]) {
@@ -189,6 +208,7 @@ impl TextState {
         self.y = combined.f;
         self.line_x = combined.e;
         self.line_y = combined.f;
+        self.text_vector = combined;
         self.text_rotation = combined.rotation_degrees();
         self.text_scale_x = combined.scale_x();
         self.text_scale_y = combined.scale_y();
@@ -209,9 +229,15 @@ impl TextState {
     }
 
     pub fn next_line(&mut self) {
-        self.line_y -= self.leading;
+        let (tx, ty) = self.transform_text_vector(0.0, -self.leading);
+        self.line_x += tx;
+        self.line_y += ty;
         self.x = self.line_x;
         self.y = self.line_y;
+    }
+
+    fn transform_text_vector(&self, tx: f32, ty: f32) -> (f32, f32) {
+        self.text_vector.transform_vector(tx, ty)
     }
 
     fn spacing_advance(&self, text: &str) -> f32 {
@@ -219,4 +245,29 @@ impl TextState {
         let spaces = text.chars().filter(|ch| *ch == ' ').count() as f32;
         chars * self.character_spacing + spaces * self.word_spacing
     }
+}
+
+fn gray(value: f32) -> String {
+    let channel = color_channel(value);
+    format!("#{channel:02x}{channel:02x}{channel:02x}")
+}
+
+fn rgb(red: f32, green: f32, blue: f32) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        color_channel(red),
+        color_channel(green),
+        color_channel(blue)
+    )
+}
+
+fn cmyk(cyan: f32, magenta: f32, yellow: f32, black: f32) -> String {
+    let red = 1.0 - (cyan + black).clamp(0.0, 1.0);
+    let green = 1.0 - (magenta + black).clamp(0.0, 1.0);
+    let blue = 1.0 - (yellow + black).clamp(0.0, 1.0);
+    rgb(red, green, blue)
+}
+
+fn color_channel(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }

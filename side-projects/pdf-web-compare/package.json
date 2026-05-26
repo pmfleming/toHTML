@@ -1,0 +1,25 @@
+{
+  "name": "pdf-web-compare-interactive",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server/index.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "node server/index.mjs"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "lucide-react": "^0.561.0",
+    "pdfjs-dist": "^5.4.449",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.2",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.0"
+  }
+}

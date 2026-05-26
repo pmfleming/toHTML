@@ -1,7 +1,7 @@
 # toHTML
 
 `toHTML` is a local-first Rust document converter for turning a focused subset
-of document formats into clean, structured HTML.
+of document formats into standalone, structured HTML.
 
 Target inputs:
 
@@ -9,8 +9,10 @@ Target inputs:
 - DOCX
 - GitHub-flavored Markdown
 
-The goal is semantic HTML for search, indexing, archival, and downstream LLM
-workflows. It is not intended to be a pixel-perfect document renderer.
+The goal is semantic HTML for search, indexing, archival, downstream LLM
+workflows, and visual review. PDF conversion uses a narrow positioned visual
+layer for extracted text, vector shapes, and embedded images while keeping the
+output standalone.
 
 ## Planned Shape
 
@@ -39,14 +41,14 @@ input file
 tohtml input.md --output output.html
 tohtml input.docx --format docx --output output.html
 tohtml input.pdf --asset-dir assets --output output.html
+tohtml input.pdf --no-images --output text-and-vectors.html
 tohtml /interactive
 ```
 
 ## Non-Goals
 
-- Pixel-perfect visual reconstruction
 - Full CSS/layout preservation
 - Remote document fetching by default
-- CSS or JavaScript output
+- Broad CSS, CSS page reconstruction, or JavaScript output
 - OCR or scanned PDF recognition
 - XLSX, PPTX, HTML, image, audio, or video input

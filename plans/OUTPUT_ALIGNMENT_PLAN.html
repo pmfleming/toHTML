@@ -1,0 +1,1063 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>toHTML Output Alignment Plan</title>
+</head>
+<body>
+  <header>
+    <h1>toHTML Output Alignment Plan</h1>
+    <p>
+      Plan date: 2026-05-23. Author: Claude (Opus 4.7).
+      Scope: bring the converter's output closer to its input across the ten
+      PDFs in <a href="../input/">input/</a> by comparing each input to the
+      current HTML in <a href="../output/">output/</a>. Each stage targets a
+      specific failure class observed in those samples and finishes with an
+      effectiveness check against the same corpus.
+    </p>
+    <p>
+      This plan is grounded in the current source tree under
+      <a href="../src/pdf/">src/pdf/</a> and the present HTML output only. It
+      does not reference the spec or earlier review docs.
+    </p>
+  </header>
+
+  <main>
+    <section id="baseline">
+      <h2>1. Baseline: what each sample currently produces</h2>
+      <p>
+        Each output combines a positional reconstruction
+        (<code>&lt;section class="pdf-recreated-page"&gt;</code>) with a
+        semantic article inside
+        <code>&lt;details class="pdf-extracted-content"&gt;</code>. The
+        observations below focus on the semantic article, because that is what
+        a downstream LLM, screen reader, or search index will use.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Input</th>
+            <th>What the input is</th>
+            <th>What the output gets right</th>
+            <th>Most visible failure in the output</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="../input/How To Program a Driver.pdf">How To Program a Driver</a></td>
+            <td>Three-page tutorial with screenshots and large headings.</td>
+            <td>Page breaks; link annotation; correct heading order.</td>
+            <td>Heading words split across fragments: "default C" + "urrent:", "Pow" + "er", "without" + "Changing" + "the Total"; "driver" appears as "ariver" (first letter decoding bug).</td>
+          </tr>
+          <tr>
+            <td><a href="../input/Inventronics IP Statement 20161122P.PDF">Inventronics IP Statement</a></td>
+            <td>One-page legal letter on a header bar.</td>
+            <td>Top heading recovered; URL detection; language read from catalog.</td>
+            <td>Numbered items 1./2./3. survive as paragraph fragments rather than a list; most lines collapse into long unbroken paragraphs; visual reconstruction puts many fragments at <code>top:780pt</code> regardless of true position.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/Installation Guidelines - Prevention of Moisture Ingress for Outdoor Applications 2019-9-11 (2).pdf">Installation Guidelines</a></td>
+            <td>One-page figure-heavy guide with three labelled diagrams.</td>
+            <td>Rotated callouts captured; one real table detected.</td>
+            <td>Bulleted action lists become loose paragraphs; figure captions interleave with body; many <code>&lt;h2&gt;</code> elements are paragraph fragments at the largest-font of a callout.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/Inventronics IP Statement 20161122P.PDF">Inventronics IP Statement</a> (again, semantic view)</td>
+            <td>—</td>
+            <td>—</td>
+            <td>"manufacture of LED drivers" appears positioned at the bottom of the visual page, because the parser sees a coordinate that the graphics state intends as top-of-text but is being interpreted as raw y. Indicates a CTM or text-matrix bug for one stream variant.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/XML-Message-for-SCT-Version-7.0-February-2013-1.pdf">XML Message for SCT</a></td>
+            <td>~80-page banking specification with deep tables and an XML appendix.</td>
+            <td>Title from <code>/Info</code>; <code>&lt;h1&gt;</code> from title; per-page <code>PageBreak</code>; Version/Date and Index/Description/Type tables; XML appendix correctly emitted as <code>&lt;pre&gt;&lt;code&gt;</code>.</td>
+            <td>Some date cells emit "October 201 0" with a spurious space before the trailing digit; TOC lines such as "Introduction......3" still survive as paragraphs; some <code>&lt;h2&gt;</code> headings cover only a single word of a multi-word title.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/IEC 61000-3-2 2018.pdf">IEC 61000-3-2:2018</a></td>
+            <td>~110-page IEC standard with bilingual two-column layout, big covers, deep TOC.</td>
+            <td>31 <code>&lt;h1&gt;</code>, 46 <code>&lt;h2&gt;</code>, 194 tables — most of the structure survives.</td>
+            <td>Cover page lists "INTERNATIONAL", "STANDARD", "NORME", "INTERNATIONALE" as four separate <code>&lt;h2&gt;</code> instead of one heading; the rotated spine text is fragmented into "fr-", "en", "01(-", "8", "201:" etc.; <code>&lt;title&gt;</code> says "English" because a watermark line is picked up; TOC dot leaders become tables.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/HCE NDA INVENTRONICS (HANGZHOU) INC 10-2017 signed.pdf">HCE NDA</a></td>
+            <td>Three-page non-disclosure agreement.</td>
+            <td>Page breaks and paragraph structure recovered.</td>
+            <td>Almost every paragraph is unreadable cipher-shifted text: "0878$/&amp;21),'(17,$/,7&lt;" instead of "MUTUAL CONFIDENTIALITY", "+8%%(// 6&amp;27/$1'" instead of "HUBBELL SCOTLAND". The font has no <code>/ToUnicode</code> map and no fallback encoding is applied.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/DREU20210303IN01.pdf">DREU2021... Quotation</a></td>
+            <td>Two-page commercial quotation with logos.</td>
+            <td>Numbered conditions become a table with right-aligned numbers; rate tables work.</td>
+            <td>Symbol-font icons emit garbage: "}uW", "}vW", "C}uW", "}v]]}vW" wherever a Wingdings or similar font is rendering decoration; document title reads "Microsoft Word - 20220412Inventronics Quotation for INDO Lighting DREU20210303IN01" — the original <code>/Info /Title</code> was the Word filename and toHTML did not normalise it.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/IAF-Dimitri.pdf">IAF-Dimitri</a></td>
+            <td>One-page inventory adjustment form.</td>
+            <td>Title block; one real form table detected.</td>
+            <td>Title is "IAF210906-1.xlsx" — Excel filename leaked via <code>/Info /Title</code>. Form labels and fields appear in scrambled order because the converter sorts segments by y then x but the form's column layout isn't a column layout — labels and inputs alternate.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/Digital Dimming V2.0 Communication Protocol Rev. A.pdf">Digital Dimming Protocol</a></td>
+            <td>~30-page protocol document with byte-level command tables.</td>
+            <td>Section headings; long command tables; per-page breaks.</td>
+            <td>Cell text gets split where it shouldn't: "D igitalD im ming", "C ommunication", "Rea AC mA)" / "d driver" splitting a command description across two cells; some descriptor cells span the wrong number of columns.</td>
+          </tr>
+          <tr>
+            <td><a href="../input/SilicaLightingORG.pdf">Silica Lighting Org Chart</a></td>
+            <td>~5-page presentation with an org chart and a contacts table.</td>
+            <td>Contacts table; email <code>mailto:</code> autolinks.</td>
+            <td>Org-chart names and titles arrive scrambled because the slide uses absolute boxes with no logical reading order; a few cells of the contacts table absorb the address of the next row.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="failure-classes">
+      <h2>2. Failure classes ranked by impact across the corpus</h2>
+      <ol>
+        <li>
+          <strong>Glyph-to-Unicode failure when <code>/ToUnicode</code> is missing.</strong>
+          Cripples HCE NDA entirely and most icon strings in DREU2021. Touches
+          potentially any third-party-produced PDF. Highest impact.
+        </li>
+        <li>
+          <strong>Title / metadata leaks.</strong> Several documents take
+          their <code>/Info /Title</code> verbatim and end up with titles like
+          <em>"Microsoft Word - …"</em>, <em>"IAF210906-1.xlsx"</em>, or
+          <em>"English"</em>. Cheap to fix and very visible.
+        </li>
+        <li>
+          <strong>Multi-line title and multi-line heading consolidation.</strong>
+          IEC cover, How To Program headings, Inventronics title bar.
+          Currently every visually-stacked line is its own heading.
+        </li>
+        <li>
+          <strong>List recovery from PDF marker glyphs.</strong> Bullets and
+          numbered items in Inventronics, Installation Guidelines, How To
+          Program become flat paragraphs.
+        </li>
+        <li>
+          <strong>Reading order in multi-column and form layouts.</strong>
+          IEC bilingual cover, Silica org chart, IAF-Dimitri form.
+        </li>
+        <li>
+          <strong>TOC dot-leader detection.</strong> The dot-leader "Title
+          .........&nbsp;3" rows become loose paragraphs or weird tables in IEC and
+          XML-Message-for-SCT.
+        </li>
+        <li>
+          <strong>Word-boundary noise from font width estimates.</strong> "Pow
+          er", "default C urrent", "AC mA)" / "d driver" — a handful of
+          mid-word splits even after the existing gap classifier.
+        </li>
+        <li>
+          <strong>Visual reconstruction noise.</strong> The
+          <code>pdf-recreated-page</code> emits hundreds of one-word spans and
+          occasional ghost shapes; collapses to look nothing like the source.
+        </li>
+        <li>
+          <strong>Page-furniture pollution.</strong> The "English" watermark
+          in IEC, the trailing "1" footnote marker above the SCT table, and
+          repeated headers on long docs still appear as content.
+        </li>
+        <li>
+          <strong>Spurious heading classification.</strong> Installation
+          Guidelines and Inventronics turn enlarged callout fragments into
+          <code>&lt;h2&gt;</code>.
+        </li>
+      </ol>
+    </section>
+
+    <section id="stages">
+      <h2>3. Staged plan</h2>
+      <p>
+        Stages are ordered by impact-per-effort against the failure classes
+        above. Every stage ends with a concrete effectiveness check that
+        re-runs the converter on the corpus and reports the delta. Each
+        check belongs in the stage that introduces the change so any
+        regression on another sample is caught immediately.
+      </p>
+
+      <section id="stage-1">
+        <h3>Stage 1 — Recover Unicode from fonts without a /ToUnicode CMap</h3>
+        <p>
+          The single biggest content failure in the corpus is HCE NDA, where
+          the entire document is unreadable because the embedded font is a
+          subset whose glyph codes are shifted relative to standard
+          encodings and whose <code>/ToUnicode</code> CMap is absent. Several
+          smaller failures in DREU2021 come from symbol fonts whose glyph
+          codes have no Unicode meaning at all.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            In <code>src/pdf/cmap/font_refs.rs</code>, when no
+            <code>/ToUnicode</code> reference is found for a font, fall back
+            to the font's <code>/Encoding</code> entry.
+          </li>
+          <li>
+            Add encoding tables in a new
+            <code>src/pdf/cmap/encodings.rs</code> for
+            <code>WinAnsiEncoding</code>, <code>MacRomanEncoding</code>,
+            <code>MacExpertEncoding</code>,
+            <code>StandardEncoding</code>, and the dedicated symbolic
+            encodings (<code>Symbol</code>, <code>ZapfDingbats</code>).
+            Tables are public-domain; each is ~256 entries.
+          </li>
+          <li>
+            Apply the <code>/Differences</code> array on top of the base
+            encoding when present, mapping the named glyphs back to Unicode
+            via the Adobe Glyph List (a compact subset is sufficient — under
+            500 glyph names cover all observed fonts).
+          </li>
+          <li>
+            For fonts whose name ends in <code>+Bold</code>,
+            <code>+Italic</code>, <code>+BoldItalic</code> etc., treat the
+            base subset prefix as the encoding hint.
+          </li>
+          <li>
+            For HCE-NDA-style subset fonts that have neither a
+            <code>/ToUnicode</code> nor a useful <code>/Encoding</code>,
+            detect a constant Caesar-style offset by sampling: take the most
+            common character code in the page, assume it should be U+0020
+            (space) since prose is mostly spaces, and apply the resulting
+            offset to the rest of the stream. Reject the offset and emit a
+            warning if the recovered text fails a printable-ratio check.
+          </li>
+          <li>
+            Add a per-page warning when a font's text could not be mapped to
+            Unicode with confidence, so the conversion is honest about the
+            failure rather than emitting cipher text silently.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/cmap/encodings.rs</code> (new)</li>
+          <li><code>src/pdf/cmap.rs</code>, <code>src/pdf/cmap/font_refs.rs</code></li>
+          <li><code>src/pdf/text/strings.rs</code> for the printable-ratio helper</li>
+        </ul>
+        <h4>Effectiveness check (must run before declaring Stage 1 done)</h4>
+        <ol>
+          <li>
+            Re-run the converter on every file in <code>input/</code> and
+            diff <code>output/</code> against the pre-stage snapshot.
+          </li>
+          <li>
+            For HCE NDA: paragraphs in the article must contain real English
+            words; assert <code>grep -c 'MUTUAL\|CONFIDENTIAL\|HUBBELL\|Inventronics'</code>
+            ≥ 8 (currently 0).
+          </li>
+          <li>
+            For DREU2021: <code>grep -c '}uW\|}vW\|}v]]}vW'</code> in the
+            article must drop to 0 (currently 28+).
+          </li>
+          <li>
+            For every other file, the article must stay byte-equal or only
+            gain characters; flag any reduction in
+            <code>grep -c '&lt;p&gt;'</code> as a regression.
+          </li>
+          <li>
+            Add a <code>tests/conversion_fixtures.rs</code> case that builds
+            a minimal PDF with a Type 1 font using
+            <code>/Encoding /WinAnsiEncoding</code> and no
+            <code>/ToUnicode</code>, asserts the output article contains the
+            correct Unicode text.
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-2">
+        <h3>Stage 2 — Clean PDF metadata: title source, language, and filename leaks</h3>
+        <p>
+          Four of the ten outputs have a <code>&lt;title&gt;</code> that is
+          either a Word/Excel filename or a one-word watermark. Two
+          documents have working language metadata; the rest have none.
+          This is the cheapest stage in the plan.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            In <code>src/pdf/mod.rs::document_title</code>, reject any
+            <code>/Info /Title</code> value that matches a generated-by-Office
+            pattern: ends in <code>.doc</code>, <code>.docx</code>,
+            <code>.xls</code>, <code>.xlsx</code>, <code>.pdf</code>,
+            <code>.pages</code>, <code>.key</code>, <code>.numbers</code>,
+            or starts with <code>Microsoft Word -&nbsp;</code>,
+            <code>Microsoft PowerPoint -&nbsp;</code>,
+            <code>untitled</code>. Fall back to the next title source.
+          </li>
+          <li>
+            Read XMP metadata in <code>/Metadata</code> when present and
+            prefer <code>dc:title</code> over <code>/Info /Title</code>.
+          </li>
+          <li>
+            When no usable title is found, take the first heading-class
+            line of page 1 whose font size is the largest on that page and
+            which is at least three characters long, ignoring single words
+            like "English" or "Draft".
+          </li>
+          <li>
+            When <code>/Lang</code> is missing, leave
+            <code>&lt;html&gt;</code> without a <code>lang</code> attribute
+            rather than emitting an empty value. Detect "fr-en" or "en-fr"
+            bilingual content if both languages appear in long enough runs
+            and emit two warnings ("document is bilingual; default lang set
+            to X").
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/mod.rs</code></li>
+          <li><code>src/pdf/streams.rs</code> for XMP stream access</li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            <code>grep '&lt;title&gt;'</code> across every output file —
+            no result may include <code>.docx</code>, <code>.xlsx</code>,
+            <code>.pdf</code>, or start with <code>Microsoft Word -&nbsp;</code>.
+          </li>
+          <li>
+            For IEC 61000-3-2 the title must contain
+            <code>61000-3-2</code> and not be the single word "English".
+          </li>
+          <li>
+            For DREU2021 the title must contain
+            <code>Quotation for INDO Lighting</code> (or fall back to a
+            heading from page 1) but must not contain
+            <code>Microsoft Word</code>.
+          </li>
+          <li>
+            For IAF-Dimitri the title must not contain <code>.xlsx</code>.
+          </li>
+          <li>
+            Existing positive cases (XML-Message-for-SCT, Inventronics)
+            must keep their working titles.
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-3">
+        <h3>Stage 3 — Consolidate multi-line headings and document titles</h3>
+        <p>
+          IEC's cover, the How To Program headings, the Installation
+          Guidelines callouts, and the Inventronics letterhead all emit one
+          <code>&lt;h2&gt;</code> per visual line where the source has one
+          heading wrapped across lines. Consolidation must respect real
+          paragraph boundaries.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            In <code>src/pdf/layout.rs</code>, after the existing heading
+            classifier marks a line as a heading, merge with subsequent
+            lines that:
+            <ul>
+              <li>match the same font name and size within ±5%, and</li>
+              <li>begin within one line-height vertically below the
+                previous, and</li>
+              <li>are not themselves a list marker.</li>
+            </ul>
+            Use a single concatenated string with a single space and emit a
+            single <code>Heading</code> block.
+          </li>
+          <li>
+            When the merged heading would exceed 200 characters, abort the
+            merge — likely two unrelated headings.
+          </li>
+          <li>
+            Detect a "stacked title block" on page 1 where ≥ 3 same-font
+            heading lines are vertically contiguous and emit them as one
+            <code>h1</code> using the largest font.
+          </li>
+          <li>
+            Demote consecutive identical headings (the IEC pattern where
+            "INTERNATIONAL STANDARD" appears on every cover page) to
+            page-furniture and suppress after the first emission per font /
+            content combination.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/layout.rs</code></li>
+          <li><code>src/pdf/postprocess.rs</code> for the duplicate-heading suppression</li>
+          <li><code>src/pdf/layout_tests.rs</code> for new fixtures</li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            For IEC the four-line title cover must produce one
+            <code>&lt;h1&gt;</code> containing "INTERNATIONAL STANDARD" or
+            similar, not four <code>&lt;h2&gt;</code>.
+          </li>
+          <li>
+            For Installation Guidelines the <code>&lt;h2&gt;</code> count
+            must drop from 3+ to ≤ 1 (one real section heading).
+          </li>
+          <li>
+            For Inventronics IP Statement the page-1 title must remain a
+            single <code>&lt;h1&gt;</code>.
+          </li>
+          <li>
+            For XML-Message-for-SCT the per-section <code>&lt;h2&gt;</code>
+            count must not drop (regression guard) — those are real
+            section titles.
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-4">
+        <h3>Stage 4 — Recover lists from PDF marker glyphs</h3>
+        <p>
+          Inventronics ("1.", "2.", "3."), Installation Guidelines (bullets
+          and arrows), and the protocol docs ("o" sub-bullets) all currently
+          render as flat paragraphs. The existing list detector only handles
+          markers at the start of a clean text line.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            In <code>src/pdf/layout.rs</code>, extend the unordered-marker
+            set with the glyphs typically used in PDFs: <code>•</code>,
+            <code>·</code>, <code>▪</code>, <code>►</code>,
+            <code>‣</code>, <code>—</code>, <code>o</code> (lowercase Latin
+            "o" used as a sub-bullet in Inventronics-style protocol docs
+            when it's followed by ≥ 2 spaces and the rest of the line is at
+            the same indent across siblings).
+          </li>
+          <li>
+            For ordered markers, accept "1.", "(1)", "1)", "i.", "I." and
+            uppercase letter prefixes "A.".
+          </li>
+          <li>
+            When a marker is a tiny separate segment (the Inventronics
+            "1.", "2.", "3." appear as standalone 12pt fragments at the
+            page margin), pair it with the next text-line whose y is within
+            two line-heights and whose x is to the right of the marker.
+          </li>
+          <li>
+            Detect indented continuation lines (text-line whose x is past
+            the marker's right edge) and append them to the same list-item
+            block instead of starting a new paragraph.
+          </li>
+          <li>
+            Pre-pass: if the same marker glyph appears at consistent x in
+            ≥ 3 lines within 20 line-heights, treat all those lines as a
+            list rather than as paragraphs.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/layout.rs</code></li>
+          <li><code>src/pdf/layout_tests.rs</code></li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            For Inventronics IP Statement the article must contain a
+            <code>&lt;ol&gt;</code> with at least three <code>&lt;li&gt;</code>
+            items; the standalone "1.", "2.", "3." paragraphs must be gone.
+          </li>
+          <li>
+            For Installation Guidelines: the bullet section under "Best
+            Practice" must produce <code>&lt;ul&gt;</code> with multiple
+            <code>&lt;li&gt;</code>.
+          </li>
+          <li>
+            For Digital Dimming Protocol the "o" sub-bullets under each
+            command must produce nested <code>&lt;ul&gt;</code>.
+          </li>
+          <li>
+            For DREU2021 the existing numbered conditions (1.–9.) currently
+            render as a 9-row table; this stage must convert them to an
+            <code>&lt;ol&gt;</code> instead.
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-5">
+        <h3>Stage 5 — Use measured glyph widths for word-boundary classification</h3>
+        <p>
+          The remaining mid-word splits ("Pow er", "default C urrent",
+          "D igitalD im ming", "Rea AC mA)" / "d driver") come from the
+          gap classifier in <code>src/pdf/text/lines.rs</code> using an
+          approximate <code>0.25 × font_size</code> threshold. The font
+          metrics module already loads per-character widths but only uses
+          them for segment positioning, not for the gap decision.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            In <code>src/pdf/text/lines.rs::push_gap</code>, replace the
+            font-size proportional threshold with the actual width of a
+            space character in the current font, queried from
+            <code>FontMetrics</code>. Fall back to
+            <code>font_size × 0.25</code> when the font has no recorded
+            space width.
+          </li>
+          <li>
+            In <code>src/pdf/layout.rs::table_cells</code> the cluster gap
+            threshold should also come from the font's space-width × 2
+            instead of the constant 21pt fallback.
+          </li>
+          <li>
+            Add a "joined cell" pass: when two adjacent segments belong to
+            the same font and the gap between them is below a single space
+            width, drop any space that was injected between them in the
+            text (fixes "D igitalD im ming" and "AC mA)" / "d driver").
+          </li>
+          <li>
+            Cache <code>FontMetrics::space_width</code> per font so the
+            check is O(1) per segment.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/text/lines.rs</code></li>
+          <li><code>src/pdf/fonts.rs</code></li>
+          <li><code>src/pdf/layout.rs</code></li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            <code>grep -c 'Pow er\|default C urrent\|D igitalD\|Rea AC mA'</code>
+            across the corpus must reach 0.
+          </li>
+          <li>
+            For XML-Message-for-SCT: "October 201 0", "January 201 2", and
+            the trailing-digit splits must drop from the article (allowed
+            to remain in the visual reconstruction).
+          </li>
+          <li>
+            For Digital Dimming Protocol: every command table row should
+            have a single description cell, no mid-word splits.
+          </li>
+          <li>
+            Word-count regression guard: total
+            <code>wc -w</code> on the article portion must not drop more
+            than 2% on any file.
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-6">
+        <h3>Stage 6 — Reading order for multi-column and form layouts</h3>
+        <p>
+          IEC's cover is a bilingual two-column layout; the Silica org
+          chart is a free-form positioned slide; IAF-Dimitri is a form
+          where labels and inputs share rows. The current y-then-x sort in
+          <code>src/pdf/text/lines.rs::text_lines</code> walks the page as
+          if it were a single column. The result is interleaved English and
+          French in IEC and shuffled names/titles in Silica.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            Add a column detector in <code>src/pdf/text/lines.rs</code>:
+            scan the segment x positions across the whole page, cluster
+            them into vertical bands, and decide whether the page is
+            multi-column by checking for two or more bands separated by a
+            sustained gap with no segments.
+          </li>
+          <li>
+            When the page is multi-column, sort within each band before
+            interleaving — i.e. emit all of column 1 top-to-bottom, then
+            column 2, then column 3 — rather than y-major across the whole
+            page.
+          </li>
+          <li>
+            Detect form layouts: a page where most text is paired with
+            small rectangles or rule lines at consistent x positions.
+            Convert label/value pairs into a <code>&lt;dl&gt;</code> by
+            pairing each label with the value to its right or below.
+          </li>
+          <li>
+            Use tagged-PDF reading order when <code>/StructTreeRoot</code>
+            provides it, overriding the geometric detector.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/text/lines.rs</code></li>
+          <li><code>src/pdf/layout.rs</code></li>
+          <li><code>src/pdf/struct_tree.rs</code></li>
+          <li><code>src/pdf/layout_tests.rs</code></li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            IEC cover: the English copyright block ("THIS PUBLICATION IS
+            COPYRIGHT PROTECTED…") must appear before the French copyright
+            block ("Droits de reproduction réservés…") in the article;
+            currently they are correct on some pages and interleaved on
+            others. After this stage, no sentence should mix English and
+            French within one paragraph.
+          </li>
+          <li>
+            For Silica org chart: the page-1 list of names must be in
+            top-to-bottom column order; the existing scramble where "Klaus
+            Kern Local Country Support" appears between two unrelated names
+            must be gone.
+          </li>
+          <li>
+            For IAF-Dimitri the form should produce a
+            <code>&lt;dl&gt;</code> with paired terms:
+            <code>&lt;dt&gt;PART NUMBER:&lt;/dt&gt;&lt;dd&gt;PRG-MUL2&lt;/dd&gt;</code>,
+            <code>&lt;dt&gt;QUANTITY:&lt;/dt&gt;&lt;dd&gt;1&lt;/dd&gt;</code>, etc.
+          </li>
+          <li>
+            For all other docs, paragraph order must remain byte-equal in
+            the article (the change should be a no-op on single-column
+            pages).
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-7">
+        <h3>Stage 7 — Treat TOC dot leaders as a table of contents, not a table</h3>
+        <p>
+          IEC and XML-Message-for-SCT both have multi-page TOC sections
+          where each entry is "Title …………… 3". The current detector either
+          emits these as paragraphs full of dots or as wide tables with the
+          dots as a middle column.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            In <code>src/pdf/postprocess.rs</code> add a TOC detector that
+            triggers when ≥ 3 consecutive paragraphs each match the
+            pattern <code>^(.+?)\s*\.{4,}\s*(\d+)$</code>.
+          </li>
+          <li>
+            Emit those as a <code>&lt;nav class="toc"&gt;</code> containing
+            an <code>&lt;ol&gt;</code> whose items are
+            <code>&lt;li&gt;&lt;a href="#section-N"&gt;Title&lt;/a&gt; &lt;span&gt;page&lt;/span&gt;&lt;/li&gt;</code>
+            (no link target until Stage 8, but the structure is right).
+          </li>
+          <li>
+            Strip TOC paragraphs from the rest of the article so they
+            don't appear twice.
+          </li>
+          <li>
+            Reject false positives by requiring the page numbers in the
+            sequence to be monotonically non-decreasing.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/postprocess.rs</code></li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            For XML-Message-for-SCT every TOC line ("Introduction…3",
+            "Change History…4", etc.) must move into one
+            <code>&lt;nav class="toc"&gt;&lt;ol&gt;</code> and not appear in
+            any other <code>&lt;p&gt;</code>.
+          </li>
+          <li>
+            For IEC the multi-page TOC must collapse to one or more
+            <code>&lt;nav&gt;</code> blocks; the 194 tables in that output
+            should drop noticeably (the TOC currently inflates the count).
+          </li>
+          <li>
+            <code>grep -c '\\.{6,}'</code> across the article must drop to
+            near zero.
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-8">
+        <h3>Stage 8 — Drop page furniture: watermarks, footnote anchors, hairlines</h3>
+        <p>
+          The IEC "English" watermark, the "1" footnote marker in
+          XML-Message-for-SCT, the standalone "P a g e" page-number
+          fragments, and many tiny shape decorations in the visual
+          reconstruction are all page furniture, not content.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            Extend <code>src/pdf/postprocess.rs::repeated_short_paragraphs</code>
+            to also detect single-character or single-word paragraphs that
+            appear at the same y within page-margin tolerance across many
+            pages (page numbers, watermarks).
+          </li>
+          <li>
+            Drop paragraphs whose only content is a single digit and whose
+            y is in the top or bottom 10% of the page (page numbers).
+          </li>
+          <li>
+            Drop paragraphs whose font size is ≤ 60% of the body font and
+            whose text is a single character or pure digits (footnote
+            anchors).
+          </li>
+          <li>
+            In <code>src/pdf/visual.rs::render_pages</code>, suppress
+            rectangle shapes whose area is under 4 pt² and which are
+            isolated from any text — these are anti-aliasing artifacts of
+            stroked lines.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/postprocess.rs</code></li>
+          <li><code>src/pdf/visual.rs</code></li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            For IEC the article must no longer start with <code>&lt;h1&gt;English&lt;/h1&gt;</code>.
+          </li>
+          <li>
+            For XML-Message-for-SCT the standalone "1" footnote paragraph
+            above the Index table must be gone.
+          </li>
+          <li>
+            For Installation Guidelines the trailing "P a g e"
+            paragraphs (if any) must be gone.
+          </li>
+          <li>
+            Visual reconstruction shape count for Inventronics IP Statement
+            (currently ≈ 12 hairline rectangles forming a header bar)
+            should drop by at least half without losing the visible header
+            bar itself.
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-9">
+        <h3>Stage 9 — Tighten heading classification to font-and-isolation evidence</h3>
+        <p>
+          Installation Guidelines and DREU2021 both still produce stray
+          <code>&lt;h2&gt;</code> headings on enlarged callout fragments.
+          The current classifier already requires isolation OR a
+          heading-like ending, but accepts any line that is ≥ 1.25× the
+          local body font size.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            In <code>src/pdf/layout.rs::heading_line</code> require both
+            <em>isolated</em> AND <em>not ending in mid-clause
+            punctuation</em>, instead of either.
+          </li>
+          <li>
+            Add a font-weight signal: if the font name contains
+            <code>Bold</code> or the font descriptor's
+            <code>/Flags</code> bit 19 is set, accept smaller font ratios.
+          </li>
+          <li>
+            Demote any heading candidate that lives inside a tagged
+            <code>/P</code> structure (paragraph), and promote any candidate
+            inside a tagged <code>/H</code> structure regardless of size.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/layout.rs</code></li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            For Installation Guidelines, total <code>&lt;h2&gt;</code>
+            count in the article must drop to ≤ 2 (currently 3+).
+          </li>
+          <li>
+            For DREU2021, no <code>&lt;h2&gt;</code> may contain a Wingdings
+            glyph fragment.
+          </li>
+          <li>
+            For XML-Message-for-SCT and IEC, total headings must not drop
+            by more than 5% — they are real section titles.
+          </li>
+        </ol>
+      </section>
+
+      <section id="stage-10">
+        <h3>Stage 10 — Reduce visual reconstruction noise</h3>
+        <p>
+          The positional view (<code>pdf-recreated-page</code>) is helpful
+          for sighted inspection but currently emits 27 000+ fragments for
+          XML-Message-for-SCT and 8 800 for IEC, many of them adjacent
+          single-word fragments that visibly belong together. Coalescing
+          them makes the visual reconstruction more readable and shrinks
+          the output substantially.
+        </p>
+        <h4>Work items</h4>
+        <ol>
+          <li>
+            In <code>src/pdf/visual.rs::render_pages</code>, group adjacent
+            <code>TextSegment</code>s on the same baseline that share
+            font, size and colour into a single <code>&lt;span&gt;</code>.
+            The grouping rule should match the gap classifier in Stage 5 so
+            visual and semantic views agree.
+          </li>
+          <li>
+            Drop near-zero-area shapes (already covered by Stage 8) and
+            overlapping duplicate shapes.
+          </li>
+          <li>
+            For shapes whose only purpose is to underline a piece of text,
+            emit a single
+            <code>&lt;u&gt;</code> or
+            <code>&lt;span style="text-decoration:underline"&gt;</code> on
+            the corresponding text fragment instead of a separate shape.
+          </li>
+          <li>
+            Cap the visual reconstruction at the first N pages
+            (configurable, default 8) so that 100-page documents don't
+            balloon the HTML; emit a hint that the full visual is
+            truncated.
+          </li>
+        </ol>
+        <h4>Files touched</h4>
+        <ul>
+          <li><code>src/pdf/visual.rs</code></li>
+          <li><code>src/pdf/graphics.rs</code></li>
+        </ul>
+        <h4>Effectiveness check</h4>
+        <ol>
+          <li>
+            For XML-Message-for-SCT the fragment count
+            (<code>grep -c pdf-text-fragment</code>) must drop by at least
+            50% without losing any visible text.
+          </li>
+          <li>
+            For Inventronics IP Statement the visual page must show the
+            header bar but no longer scatter "manufacture", "of LED
+            drivers", "worldwide" as separate fragments at the bottom of
+            the page.
+          </li>
+          <li>
+            Output file size on disk should drop measurably for IEC and
+            XML-Message-for-SCT (the two largest), with no information
+            loss in the article.
+          </li>
+        </ol>
+      </section>
+    </section>
+
+    <section id="visual-review">
+      <h2>4. Visual review findings (browser side-by-side)</h2>
+      <p>
+        After the initial draft of this plan, every input PDF was
+        rasterised page-by-page and placed next to its extracted article
+        text in <a href="../compare/">compare/</a> using
+        <code>compare_render.py</code>. The side-by-side images surfaced a
+        few problems that the article text alone did not make obvious; the
+        plan's stages are unchanged but a few items are reinforced or
+        upgraded below.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Sample (page)</th>
+            <th>What the browser shows</th>
+            <th>Plan implication</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Inventronics IP Statement (p 1)</td>
+            <td>
+              Items 1–3 of the numbered list are not just flattened — large
+              chunks of the body are missing. The article jumps from
+              "specifiedInventronics drivers.2." straight to
+              "fic patentssupport thecompanyposition" with no
+              "Independent legal opinions obtained by Inventronics on
+              speci-" in between. Text is being dropped entirely, not
+              merely concatenated.
+            </td>
+            <td>
+              Upgrade Stage 4 (list recovery): also add a "no text loss"
+              effectiveness check that compares total <code>wc -w</code> on
+              the article to the result of <code>pdftotext input.pdf -</code>
+              and refuses to land any stage that loses more than 10% of
+              source words. The Inventronics drop is far past that.
+            </td>
+          </tr>
+          <tr>
+            <td>HCE NDA (p 1)</td>
+            <td>
+              Confirms the constant-offset cipher hypothesis: every cipher
+              code is exactly 29 below the intended ASCII (e.g.,
+              <code>M=77 → 0=48</code>, <code>A=65 → $=36</code>,
+              <code>U=85 → 8=56</code>). Some words inside the same
+              paragraph are in plain English ("DQG theiU UHSUHVHQWDWLYHV"
+              shows "DQG" cipher next to "theiU" partly-plain), which means
+              the same paragraph uses two encodings on alternating runs.
+            </td>
+            <td>
+              Stage 1's offset detector must work per font and per text
+              run, not per page. Add a fixture in the Stage 1 check that
+              mixes two fonts on one line and asserts both get decoded.
+            </td>
+          </tr>
+          <tr>
+            <td>DREU20210303IN01 (p 1)</td>
+            <td>
+              The cipher characters <code>}uW</code>, <code>vW</code>,
+              <code>C}uW</code>, <code>b}XW</code>, <code>^hWdW</code> are
+              clearly icon glyphs (envelope, person, phone) on a
+              Wingdings-class font with no Unicode meaning. The body text
+              itself extracts cleanly.
+            </td>
+            <td>
+              Add a sub-rule to Stage 1: if a font is identified as
+              decorative/symbolic (Wingdings, Symbol, Webdings, ZapfDingbats)
+              <em>and</em> the offset detector cannot find a printable
+              recovery, emit zero characters and a single warning rather
+              than cipher punctuation in the article. Icon glyphs are
+              decoration, not content.
+            </td>
+          </tr>
+          <tr>
+            <td>IEC 61000-3-2 (cover, p 1)</td>
+            <td>
+              The cover's stacked title block "INTERNATIONAL / STANDARD /
+              NORME / INTERNATIONALE" becomes four separate headings.
+              <code>&lt;title&gt;</code> is the watermark word "English".
+              The vertical spine text appears as the fragment sequence
+              <code>fr-</code> <code>en</code> <code>01(-</code>
+              <code>8</code> <code>201:</code> <code>2-</code>
+              <code>3-</code> <code>61000</code> <code>IEC</code> —
+              that's "IEC 61000-3-2:2018-01 en-fr" rotated 90° and read
+              char by char in the wrong order.
+            </td>
+            <td>
+              Stage 3 (heading consolidation) and Stage 6 (reading order
+              for rotated text) both apply. Add a rotated-text reading
+              order rule: when a run of single-character fragments shares
+              the same <code>transform: rotate(90deg)</code> and a common
+              x, sort them by y descending (PDF y increases upward) before
+              joining.
+            </td>
+          </tr>
+          <tr>
+            <td>XML-Message-for-SCT (cover, p 1)</td>
+            <td>
+              The 5-line title block ("XML message for / SEPA Credit /
+              Transfer Initiation / Implementation Guidelines / for the
+              Netherlands") becomes 4 separate
+              <code>&lt;h2&gt;</code>. The TOC immediately after is emitted
+              as a 17-row table where the dot-leader run is its own middle
+              column.
+            </td>
+            <td>
+              Confirms Stage 3 (heading consolidation) and Stage 7 (TOC
+              dot-leader to nav). Both are high-impact for this sample.
+            </td>
+          </tr>
+          <tr>
+            <td>Installation Guidelines (p 1)</td>
+            <td>
+              The three rotated section labels "Best", "Acceptable",
+              "Avoid" appear in the article body in the wrong place
+              (before the body they label, rather than as section
+              headings beside the figures). The "Best Practice" bullets
+              render as a single multi-cell row; the "Acceptable" and
+              "Avoid" bullets render as a flat paragraph stream.
+            </td>
+            <td>
+              Stage 6's column detector needs a "rotated label column" case:
+              a tall narrow column of rotated text on the left of a wider
+              text block should become a section heading for the block to
+              its right, not a paragraph mixed in. Stage 4's list rules
+              should make bullet runs become <code>&lt;ul&gt;</code> here.
+            </td>
+          </tr>
+          <tr>
+            <td>SilicaLightingORG (p 2)</td>
+            <td>
+              An org-chart slide. The HTML article reads the boxes in
+              left-to-right top-to-bottom order, scrambling parent / child
+              relationships. The output is unusable for understanding the
+              chart.
+            </td>
+            <td>
+              Add Stage 6.1: detect <em>diagram pages</em> where most text
+              fragments sit inside vector rectangles connected by lines.
+              Emit a single warning ("page <em>N</em> is a diagram —
+              extraction is best-effort") and a flat list of the boxed
+              text. Do not pretend the structure was recovered.
+            </td>
+          </tr>
+          <tr>
+            <td>How To Program a Driver (p 1)</td>
+            <td>
+              The PDF is mostly screenshots with red marker overlays.
+              The article has only the heading text (which is correct)
+              plus "ariver" for "driver" — the lowercase <code>d</code>
+              was decoded as <code>a</code> on one specific heading line.
+              This is a single-font glyph-mapping bug, not a missing
+              encoding.
+            </td>
+            <td>
+              Add to Stage 1's effectiveness check: when the font has a
+              <code>/ToUnicode</code> CMap with explicit
+              <code>beginbfchar</code> entries, verify the lookup keys
+              are read in big-endian as the spec requires. The
+              <code>d→a</code> bug is most likely a 1-byte-vs-2-byte
+              mismatch on a Type 0 font where the lookup is reading
+              <code>0x0064</code> as <code>0x6400</code> or similar.
+            </td>
+          </tr>
+          <tr>
+            <td>Inventronics IP Statement (visual reconstruction)</td>
+            <td>
+              In the visual page rather than the article, dozens of text
+              fragments are positioned at <code>top:780pt</code> — bottom
+              of the page — even though their content appears mid-page in
+              the PDF. The text matrix or current-transformation-matrix
+              is being applied incorrectly for one stream of this
+              document.
+            </td>
+            <td>
+              Add a new stage 6.2 (or a Stage 1 prerequisite): audit the
+              text-matrix / CTM composition path in
+              <code>src/pdf/text/state.rs</code> against
+              <code>fitz</code>'s positions for the same PDF. The visible
+              symptom is the wrong y for all text after a particular
+              q…cm…Q sequence.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        These findings do not change the stage ordering. Stage 1 still has
+        the largest impact (HCE NDA, DREU2021 icons, How To Program's
+        single-glyph bug all benefit). Stage 6 grows by one substage
+        (rotated-label column + diagram-page detection). The Inventronics
+        text-loss issue earns its own pre-Stage-1 audit because it cannot
+        be diagnosed from the article text alone.
+      </p>
+    </section>
+
+    <section id="closing">
+      <h2>5. Sequencing and stop conditions</h2>
+      <p>
+        Stages 1, 2, 3, 5 and 8 are independent and could land in any
+        order; Stages 4, 6, 7, 9, 10 build on those. The recommended order
+        is the one above, because Stage 1 unlocks meaningful comparison on
+        HCE NDA and DREU2021, and Stage 2 makes the title sample bar
+        usable for every subsequent check.
+      </p>
+      <p>
+        Each stage's effectiveness check is the gate: if any check fails or
+        any regression guard fires, the stage is not done. Do not move on
+        until the current stage's checks pass.
+      </p>
+      <p>
+        After all ten stages, the corpus should produce HTML where every
+        document's <code>&lt;title&gt;</code> is meaningful, every paragraph
+        contains real Unicode words, every list is a list, every TOC is a
+        navigation block, every section title is one heading not many, and
+        the visual reconstruction is a fair shadow of the original page
+        rather than a debug dump.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

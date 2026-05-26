@@ -5,7 +5,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tohtml::{docx_to_document, markdown_to_document, pdf_to_document, render_html, ConvertError};
+use tohtml::{
+    docx_to_document, markdown_to_document, pdf_to_document_with_options, render_html,
+    ConvertError, PdfConversionOptions,
+};
 
 pub fn run_from_env() -> Result<(), CliError> {
     run(env::args().skip(1).collect())
@@ -23,6 +26,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
     convert_file(
         &options.input,
         options.format,
+        options.include_images,
         Some(output.as_path()),
         options.asset_dir.as_deref(),
     )
@@ -31,6 +35,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
 fn convert_file(
     input_path: &Path,
     selected_format: Option<Format>,
+    include_images: bool,
     output: Option<&Path>,
     asset_dir: Option<&Path>,
 ) -> Result<(), CliError> {
@@ -39,7 +44,7 @@ fn convert_file(
     let format = selected_format
         .or_else(|| Format::from_path(input_path))
         .ok_or(CliError::UnknownFormat)?;
-    let mut document = convert(format, &input)?;
+    let mut document = convert(format, &input, include_images)?;
     if let Some(asset_dir) = asset_dir {
         assets::write(format, &input, &mut document, asset_dir, output)?;
     }
@@ -87,11 +92,15 @@ fn write_output(output: &Path, html: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-fn convert(format: Format, input: &[u8]) -> Result<tohtml::Document, ConvertError> {
+fn convert(
+    format: Format,
+    input: &[u8],
+    include_images: bool,
+) -> Result<tohtml::Document, ConvertError> {
     match format {
         Format::Markdown => Ok(markdown_to_document(&String::from_utf8_lossy(input))),
         Format::Docx => docx_to_document(input),
-        Format::Pdf => pdf_to_document(input),
+        Format::Pdf => pdf_to_document_with_options(input, PdfConversionOptions { include_images }),
     }
 }
 
@@ -135,13 +144,27 @@ impl Format {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Options {
     input: PathBuf,
     output: Option<PathBuf>,
     format: Option<Format>,
     asset_dir: Option<PathBuf>,
+    include_images: bool,
     interactive: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            input: PathBuf::new(),
+            output: None,
+            format: None,
+            asset_dir: None,
+            include_images: true,
+            interactive: false,
+        }
+    }
 }
 
 impl Options {
@@ -169,6 +192,8 @@ fn parse_arg(options: &mut Options, args: &[String], index: &mut usize) -> Resul
         "-o" | "--output" => options.output = Some(next_path(args, index, "--output")?),
         "--format" => options.format = Some(Format::parse(next_value(args, index, "--format")?)?),
         "--asset-dir" => options.asset_dir = Some(next_path(args, index, "--asset-dir")?),
+        "--include-images" => options.include_images = true,
+        "--no-images" => options.include_images = false,
         "--interactive" | "/interactive" => options.interactive = true,
         "-h" | "--help" => return Err(CliError::Usage),
         value if value.starts_with('-') => return Err(CliError::UnknownOption(value.to_string())),
@@ -253,7 +278,7 @@ impl std::fmt::Display for CliError {
 }
 
 fn usage() -> &'static str {
-    "usage: tohtml <input> [--format markdown|docx|pdf] [--output file] [--asset-dir dir]\n       tohtml /interactive\n\nDefault output: output/<input-name>.html"
+    "usage: tohtml <input> [--format markdown|docx|pdf] [--output file] [--asset-dir dir] [--include-images|--no-images]\n       tohtml /interactive\n\nDefault output: output/<input-name>.html"
 }
 
 pub(super) fn default_output_path(input: &Path) -> PathBuf {
@@ -283,12 +308,29 @@ mod tests {
             "markdown".to_string(),
             "--output".to_string(),
             "out.html".to_string(),
+            "--include-images".to_string(),
         ])
         .unwrap();
 
         assert_eq!(options.input, PathBuf::from("input.md"));
         assert_eq!(options.format, Some(Format::Markdown));
         assert_eq!(options.output, Some(PathBuf::from("out.html")));
+        assert!(options.include_images);
+    }
+
+    #[test]
+    fn includes_pdf_images_by_default() {
+        let options = Options::parse(vec!["input.pdf".to_string()]).unwrap();
+
+        assert!(options.include_images);
+    }
+
+    #[test]
+    fn parses_no_images_option() {
+        let options =
+            Options::parse(vec!["input.pdf".to_string(), "--no-images".to_string()]).unwrap();
+
+        assert!(!options.include_images);
     }
 
     #[test]

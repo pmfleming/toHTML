@@ -1,13 +1,19 @@
-use std::{collections::HashMap, io::Read};
-
-use flate2::read::ZlibDecoder;
+use std::collections::HashMap;
 
 use crate::ConvertError;
 
-use super::hex::decode_hex_bytes;
 use super::object::{PdfDictionaryExt, PdfObjects, PdfReference, PdfValue};
 
-#[derive(Debug, Clone, Default)]
+mod filters;
+mod legacy;
+#[cfg(test)]
+mod tests;
+
+pub use legacy::{
+    named_object_refs, number_after, object_body, object_ids, object_ref_after,
+    stream_data_for_object,
+};
+
 pub struct PdfPageExtraction {
     pub pages: Vec<PageContent>,
     pub warnings: Vec<String>,
@@ -18,8 +24,26 @@ pub struct PdfPageExtraction {
 pub struct PageContent {
     pub page_number: u32,
     pub streams: Vec<Vec<u8>>,
+    pub warnings: Vec<String>,
     pub width: Option<f32>,
     pub height: Option<f32>,
+    pub image_resources: HashMap<String, PdfReference>,
+    pub font_resources: HashMap<String, PdfReference>,
+    pub ink_annotations: Vec<InkAnnotation>,
+    pub link_annotations: Vec<LinkAnnotation>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InkAnnotation {
+    pub paths: Vec<Vec<(f32, f32)>>,
+    pub color: Option<String>,
+    pub width: f32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LinkAnnotation {
+    pub uri: String,
+    pub rect: (f32, f32, f32, f32),
 }
 
 pub fn document_pages(bytes: &[u8]) -> Result<PdfPageExtraction, ConvertError> {
@@ -103,31 +127,282 @@ fn page_content(
         return Ok(PageContent {
             page_number,
             streams: Vec::new(),
+            warnings: Vec::new(),
             width: None,
             height: None,
+            image_resources: HashMap::new(),
+            font_resources: HashMap::new(),
+            ink_annotations: Vec::new(),
+            link_annotations: Vec::new(),
         });
     };
+    let page_dictionary = page.dictionary();
     let (width, height) = page
         .dictionary()
         .and_then(media_box_size)
         .unwrap_or((None, None));
+    let image_resources = page
+        .dictionary()
+        .map(|dictionary| page_image_resources(objects, dictionary))
+        .unwrap_or_default();
+    let font_resources = page
+        .dictionary()
+        .map(|dictionary| page_font_resources(objects, dictionary))
+        .unwrap_or_default();
+    let ink_annotations = page_dictionary
+        .map(|dictionary| page_ink_annotations(objects, dictionary))
+        .unwrap_or_default();
+    let link_annotations = page_dictionary
+        .map(|dictionary| page_link_annotations(objects, dictionary))
+        .unwrap_or_default();
     let content_refs = page
         .dictionary()
         .and_then(|dictionary| dictionary.get("Contents"))
         .map(content_references)
         .unwrap_or_default();
     let mut streams = Vec::new();
+    let mut warnings = Vec::new();
     for reference in content_refs {
-        if let Some(stream) = stream_data_for_reference(source, objects, reference)? {
-            streams.push(stream);
+        match stream_data_for_reference(source, objects, reference) {
+            Ok(Some(stream)) => streams.push(stream),
+            Ok(None) => {}
+            Err(ConvertError::Pdf(message))
+                if message.starts_with("unsupported PDF stream filter") =>
+            {
+                warnings.push(format!("Page {page_number}: {message}"));
+            }
+            Err(error) => return Err(error),
         }
     }
     Ok(PageContent {
         page_number,
         streams,
+        warnings,
         width,
         height,
+        image_resources,
+        font_resources,
+        ink_annotations,
+        link_annotations,
     })
+}
+
+fn page_link_annotations(
+    objects: &PdfObjects,
+    page: &super::object::PdfDictionary,
+) -> Vec<LinkAnnotation> {
+    page.array("Annots")
+        .into_iter()
+        .flatten()
+        .filter_map(|value| annotation_dictionary(objects, value))
+        .filter(|dictionary| dictionary.name("Subtype") == Some("Link"))
+        .filter_map(link_annotation)
+        .collect()
+}
+
+fn page_ink_annotations(
+    objects: &PdfObjects,
+    page: &super::object::PdfDictionary,
+) -> Vec<InkAnnotation> {
+    page.array("Annots")
+        .into_iter()
+        .flatten()
+        .filter_map(|value| annotation_dictionary(objects, value))
+        .filter(|dictionary| dictionary.name("Subtype") == Some("Ink"))
+        .filter_map(ink_annotation)
+        .collect()
+}
+
+fn annotation_dictionary<'a>(
+    objects: &'a PdfObjects,
+    value: &'a PdfValue,
+) -> Option<&'a super::object::PdfDictionary> {
+    match value {
+        PdfValue::Dictionary(dictionary) => Some(dictionary),
+        PdfValue::Reference(reference) => objects
+            .get(*reference)
+            .or_else(|| objects.latest(reference.object))
+            .and_then(|object| object.dictionary()),
+        _ => None,
+    }
+}
+
+fn ink_annotation(dictionary: &super::object::PdfDictionary) -> Option<InkAnnotation> {
+    let paths = dictionary
+        .array("InkList")?
+        .iter()
+        .filter_map(ink_path)
+        .collect::<Vec<_>>();
+    (!paths.is_empty()).then(|| InkAnnotation {
+        paths,
+        color: annotation_color(dictionary),
+        width: annotation_stroke_width(dictionary).unwrap_or(1.5),
+    })
+}
+
+fn link_annotation(dictionary: &super::object::PdfDictionary) -> Option<LinkAnnotation> {
+    Some(LinkAnnotation {
+        uri: link_action_uri(dictionary)?,
+        rect: annotation_rect(dictionary)?,
+    })
+}
+
+fn link_action_uri(dictionary: &super::object::PdfDictionary) -> Option<String> {
+    let action = match dictionary.get("A")? {
+        PdfValue::Dictionary(values) => values,
+        _ => return None,
+    };
+    let uri = action.string_bytes("URI")?;
+    let uri = String::from_utf8_lossy(uri).to_string();
+    is_plausible_link_uri(&uri).then_some(uri)
+}
+
+fn annotation_rect(dictionary: &super::object::PdfDictionary) -> Option<(f32, f32, f32, f32)> {
+    let values = dictionary.array("Rect")?;
+    let [x1, y1, x2, y2] = values else {
+        return None;
+    };
+    let x1 = pdf_number(x1)?;
+    let y1 = pdf_number(y1)?;
+    let x2 = pdf_number(x2)?;
+    let y2 = pdf_number(y2)?;
+    Some((x1.min(x2), y1.min(y2), (x1 - x2).abs(), (y1 - y2).abs()))
+}
+
+fn is_plausible_link_uri(uri: &str) -> bool {
+    let lower = uri.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        value if value.starts_with("http://")
+            || value.starts_with("https://")
+            || value.starts_with("mailto:")
+            || value.starts_with("www.")
+    ) && !uri.chars().any(|ch| ch.is_control())
+}
+
+fn ink_path(value: &PdfValue) -> Option<Vec<(f32, f32)>> {
+    let PdfValue::Array(values) = value else {
+        return None;
+    };
+    let numbers = values.iter().filter_map(pdf_number).collect::<Vec<_>>();
+    let points = numbers
+        .chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect::<Vec<_>>();
+    (points.len() >= 2).then_some(points)
+}
+
+fn annotation_color(dictionary: &super::object::PdfDictionary) -> Option<String> {
+    let values = dictionary.array("C")?;
+    let [red, green, blue] = values else {
+        return None;
+    };
+    Some(rgb_color(
+        pdf_number(red)?,
+        pdf_number(green)?,
+        pdf_number(blue)?,
+    ))
+}
+
+fn annotation_stroke_width(dictionary: &super::object::PdfDictionary) -> Option<f32> {
+    let border_style = match dictionary.get("BS")? {
+        PdfValue::Dictionary(values) => values,
+        _ => return None,
+    };
+    positive_number(border_style.get("W")?)
+}
+
+fn positive_number(value: &PdfValue) -> Option<f32> {
+    pdf_number(value).filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn rgb_color(red: f32, green: f32, blue: f32) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        color_channel(red),
+        color_channel(green),
+        color_channel(blue)
+    )
+}
+
+fn color_channel(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn page_image_resources(
+    objects: &PdfObjects,
+    page: &super::object::PdfDictionary,
+) -> HashMap<String, PdfReference> {
+    let Some(resources) = inherited_resource_dictionary(objects, page) else {
+        return HashMap::new();
+    };
+    let Some(xobjects) = dictionary_value(objects, resources.get("XObject")) else {
+        return HashMap::new();
+    };
+
+    xobjects
+        .iter()
+        .filter_map(|(name, value)| match value {
+            PdfValue::Reference(reference) => Some((name.clone(), *reference)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn page_font_resources(
+    objects: &PdfObjects,
+    page: &super::object::PdfDictionary,
+) -> HashMap<String, PdfReference> {
+    let Some(resources) = inherited_resource_dictionary(objects, page) else {
+        return HashMap::new();
+    };
+    let Some(fonts) = dictionary_value(objects, resources.get("Font")) else {
+        return HashMap::new();
+    };
+
+    fonts
+        .iter()
+        .filter_map(|(name, value)| match value {
+            PdfValue::Reference(reference) => Some((name.clone(), *reference)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn inherited_resource_dictionary<'a>(
+    objects: &'a PdfObjects,
+    page: &'a super::object::PdfDictionary,
+) -> Option<&'a super::object::PdfDictionary> {
+    if let Some(resources) = dictionary_value(objects, page.get("Resources")) {
+        return Some(resources);
+    }
+
+    let mut parent = page.get_ref("Parent");
+    while let Some(reference) = parent {
+        let dictionary = objects
+            .get(reference)
+            .or_else(|| objects.latest(reference.object))
+            .and_then(|object| object.dictionary())?;
+        if let Some(resources) = dictionary_value(objects, dictionary.get("Resources")) {
+            return Some(resources);
+        }
+        parent = dictionary.get_ref("Parent");
+    }
+    None
+}
+
+fn dictionary_value<'a>(
+    objects: &'a PdfObjects,
+    value: Option<&'a PdfValue>,
+) -> Option<&'a super::object::PdfDictionary> {
+    match value? {
+        PdfValue::Dictionary(dictionary) => Some(dictionary),
+        PdfValue::Reference(reference) => objects
+            .get(*reference)
+            .or_else(|| objects.latest(reference.object))
+            .and_then(|object| object.dictionary()),
+        _ => None,
+    }
 }
 
 fn media_box_size(dictionary: &super::object::PdfDictionary) -> Option<(Option<f32>, Option<f32>)> {
@@ -177,8 +452,22 @@ fn stream_data_for_reference(
     let Some(data) = &object.stream else {
         return Ok(None);
     };
-    let filters = object.dictionary().map(stream_filters).unwrap_or_default();
-    Ok(Some(decode_filters(&filters, data)?))
+    let filters = object
+        .dictionary()
+        .map(filters::stream_filters)
+        .unwrap_or_default();
+    Ok(Some(filters::decode_filters(&filters, data)?))
+}
+
+pub(super) fn decoded_stream_data(
+    dictionary: &super::object::PdfDictionary,
+    data: &[u8],
+) -> Result<Vec<u8>, ConvertError> {
+    filters::decode_filters(&filters::stream_filters(dictionary), data)
+}
+
+pub(super) fn stream_filters(dictionary: &super::object::PdfDictionary) -> Vec<String> {
+    filters::stream_filters(dictionary)
 }
 
 fn value_ref(value: &PdfValue) -> Option<PdfReference> {
@@ -188,219 +477,9 @@ fn value_ref(value: &PdfValue) -> Option<PdfReference> {
     }
 }
 
-pub fn object_body(bytes: &[u8], object_id: u32) -> Option<&[u8]> {
-    let marker = format!("{object_id} 0 obj");
-    let start = find_token(bytes, marker.as_bytes(), 0)? + marker.len();
-    let end = find_token(bytes, b"endobj", start)?;
-    Some(&bytes[start..end])
-}
-
-pub fn stream_data_for_object(
-    bytes: &[u8],
-    object_id: u32,
-) -> Result<Option<Vec<u8>>, ConvertError> {
-    let Some(body) = object_body(bytes, object_id) else {
-        return Ok(None);
-    };
-    let Some(stream_start) = find_token(body, b"stream", 0) else {
-        return Ok(None);
-    };
-    let Some(stream_end) = find_token(body, b"endstream", stream_start) else {
-        return Ok(None);
-    };
-    let header = &body[..stream_start];
-    let data = trim_stream_newlines(&body[stream_start + b"stream".len()..stream_end]);
-    Ok(Some(decode_stream(header, data)?))
-}
-
-pub fn named_object_refs(bytes: &[u8], name_prefix: &str) -> HashMap<String, u32> {
-    pdf_tokens(bytes)
-        .windows(4)
-        .filter_map(|window| named_object_ref(window, name_prefix))
-        .collect()
-}
-
-pub fn object_ref_after(bytes: &[u8], marker: &[u8]) -> Option<u32> {
-    let marker = String::from_utf8_lossy(marker);
-    pdf_tokens(bytes)
-        .windows(4)
-        .find_map(|window| object_ref_window(window, &marker))
-}
-
-pub fn number_after(bytes: &[u8], marker: &[u8]) -> Option<u32> {
-    let marker = String::from_utf8_lossy(marker);
-    pdf_tokens(bytes)
-        .windows(2)
-        .find(|window| window[0] == marker)
-        .and_then(|window| window[1].parse().ok())
-}
-
-pub fn font_name_after(bytes: &[u8], marker: &[u8]) -> Option<String> {
-    pdf_tokens(bytes)
-        .windows(2)
-        .find(|window| window[0].as_bytes() == marker && window[1].starts_with("/F"))
-        .map(|window| strip_name_prefix(&window[1]))
-}
-
-pub fn object_ids(bytes: &[u8]) -> Vec<u32> {
-    pdf_tokens(bytes)
-        .windows(3)
-        .filter_map(|window| {
-            (window[1] == "0" && window[2] == "obj")
-                .then(|| window[0].parse().ok())
-                .flatten()
-        })
-        .collect()
-}
-
-fn decode_stream(header: &[u8], data: &[u8]) -> Result<Vec<u8>, ConvertError> {
-    let filters = legacy_stream_filters(header);
-    decode_filters(&filters, data)
-}
-
-fn decode_filters(filters: &[String], data: &[u8]) -> Result<Vec<u8>, ConvertError> {
-    let mut decoded = data.to_vec();
-    for filter in filters {
-        decoded = match filter.as_str() {
-            "FlateDecode" | "Fl" => flate_decode(&decoded)?,
-            "ASCIIHexDecode" | "AHx" => ascii_hex_decode(&decoded),
-            "ASCII85Decode" | "A85" => ascii85_decode(&decoded)?,
-            "RunLengthDecode" | "RL" => run_length_decode(&decoded),
-            "DCTDecode" | "JPXDecode" | "CCITTFaxDecode" | "JBIG2Decode" => decoded,
-            unsupported => {
-                return Err(ConvertError::Pdf(format!(
-                    "unsupported PDF stream filter {unsupported}"
-                )))
-            }
-        };
-    }
-    Ok(decoded)
-}
-
-fn flate_decode(data: &[u8]) -> Result<Vec<u8>, ConvertError> {
-    let mut decoder = ZlibDecoder::new(data);
-    let mut decoded = Vec::new();
-    decoder.read_to_end(&mut decoded)?;
-    Ok(decoded)
-}
-
-fn stream_filters(dictionary: &super::object::PdfDictionary) -> Vec<String> {
-    match dictionary.get("Filter") {
-        Some(PdfValue::Name(name)) => vec![name.clone()],
-        Some(PdfValue::Array(values)) => values
-            .iter()
-            .filter_map(|value| match value {
-                PdfValue::Name(name) => Some(name.clone()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn legacy_stream_filters(header: &[u8]) -> Vec<String> {
-    let names = [
-        "ASCIIHexDecode",
-        "ASCII85Decode",
-        "LZWDecode",
-        "FlateDecode",
-        "RunLengthDecode",
-        "DCTDecode",
-        "JPXDecode",
-        "CCITTFaxDecode",
-        "JBIG2Decode",
-    ];
-    let header = String::from_utf8_lossy(header);
-    names
-        .into_iter()
-        .filter(|name| header.contains(&format!("/{name}")))
-        .map(str::to_string)
-        .collect()
-}
-
-fn ascii_hex_decode(data: &[u8]) -> Vec<u8> {
-    let digits: Vec<u8> = data
-        .iter()
-        .copied()
-        .take_while(|byte| *byte != b'>')
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect();
-    decode_hex_bytes(&digits)
-}
-
-fn ascii85_decode(data: &[u8]) -> Result<Vec<u8>, ConvertError> {
-    let mut output = Vec::new();
-    let mut group = Vec::new();
-    for byte in data
-        .iter()
-        .copied()
-        .filter(|byte| !byte.is_ascii_whitespace())
-    {
-        match byte {
-            b'~' => break,
-            b'z' if group.is_empty() => output.extend_from_slice(&[0, 0, 0, 0]),
-            33..=117 => {
-                group.push(byte - 33);
-                if group.len() == 5 {
-                    push_ascii85_group(&mut output, &group, 4)?;
-                    group.clear();
-                }
-            }
-            _ => {}
-        }
-    }
-    if !group.is_empty() {
-        let bytes_to_emit = group.len().saturating_sub(1);
-        while group.len() < 5 {
-            group.push(84);
-        }
-        push_ascii85_group(&mut output, &group, bytes_to_emit)?;
-    }
-    Ok(output)
-}
-
-fn push_ascii85_group(
-    output: &mut Vec<u8>,
-    group: &[u8],
-    count: usize,
-) -> Result<(), ConvertError> {
-    let mut value = 0u32;
-    for digit in group {
-        value = value
-            .checked_mul(85)
-            .and_then(|value| value.checked_add(u32::from(*digit)))
-            .ok_or_else(|| ConvertError::Pdf("invalid ASCII85 stream data".to_string()))?;
-    }
-    output.extend_from_slice(&value.to_be_bytes()[..count]);
-    Ok(())
-}
-
-fn run_length_decode(data: &[u8]) -> Vec<u8> {
-    let mut output = Vec::new();
-    let mut index = 0;
-    while let Some(length) = data.get(index).copied() {
-        index += 1;
-        match length {
-            128 => break,
-            0..=127 => {
-                let count = usize::from(length) + 1;
-                output.extend_from_slice(&data[index..(index + count).min(data.len())]);
-                index += count;
-            }
-            129..=255 => {
-                if let Some(byte) = data.get(index).copied() {
-                    output.extend(std::iter::repeat_n(byte, 257 - usize::from(length)));
-                }
-                index += 1;
-            }
-        }
-    }
-    output
-}
-
 fn document_warnings(bytes: &[u8], objects: &PdfObjects, pages: &[PageContent]) -> Vec<String> {
     let mut warnings = Vec::new();
-    if contains_token(bytes, b"/Encrypt") {
+    if legacy::contains_token(bytes, b"/Encrypt") {
         warnings
             .push("PDF declares encryption; extraction may be blocked or incomplete".to_string());
     }
@@ -425,75 +504,8 @@ fn document_warnings(bytes: &[u8], objects: &PdfObjects, pages: &[PageContent]) 
             page.page_number
         ));
     }
+    for page in pages {
+        warnings.extend(page.warnings.iter().cloned());
+    }
     warnings
-}
-
-fn trim_stream_newlines(data: &[u8]) -> &[u8] {
-    let data = data
-        .strip_prefix(b"\r\n")
-        .or_else(|| data.strip_prefix(b"\n"))
-        .unwrap_or(data);
-    data.strip_suffix(b"\r\n")
-        .or_else(|| data.strip_suffix(b"\n"))
-        .unwrap_or(data)
-}
-
-fn named_object_ref(window: &[String], name_prefix: &str) -> Option<(String, u32)> {
-    if window[0].starts_with(name_prefix) && window[2] == "0" && window[3] == "R" {
-        Some((strip_name_prefix(&window[0]), window[1].parse().ok()?))
-    } else {
-        None
-    }
-}
-
-fn object_ref_window(window: &[String], marker: &str) -> Option<u32> {
-    (window[0] == marker && window[2] == "0" && window[3] == "R")
-        .then(|| window[1].parse().ok())
-        .flatten()
-}
-
-fn strip_name_prefix(name: &str) -> String {
-    name.trim_start_matches('/').to_string()
-}
-
-fn pdf_tokens(bytes: &[u8]) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            byte if byte.is_ascii_whitespace() || is_token_delimiter(byte) => index += 1,
-            _ => tokens.push(read_token(bytes, &mut index)),
-        }
-    }
-    tokens
-}
-
-fn read_token(bytes: &[u8], index: &mut usize) -> String {
-    let start = *index;
-    *index += 1;
-    while *index < bytes.len()
-        && !bytes[*index].is_ascii_whitespace()
-        && !is_token_delimiter(bytes[*index])
-        && bytes[*index] != b'/'
-    {
-        *index += 1;
-    }
-    String::from_utf8_lossy(&bytes[start..*index]).to_string()
-}
-
-fn is_token_delimiter(byte: u8) -> bool {
-    matches!(byte, b'<' | b'>' | b'[' | b']' | b'(' | b')')
-}
-
-fn find_token(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    haystack[from..]
-        .windows(needle.len())
-        .position(|window| window == needle)
-        .map(|position| position + from)
-}
-
-fn contains_token(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
 }

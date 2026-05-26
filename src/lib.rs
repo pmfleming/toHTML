@@ -10,4 +10,4 @@ pub use error::ConvertError;
 pub use html::render_html;
 pub use markdown::markdown_to_document;
 pub use model::*;
-pub use pdf::pdf_to_document;
+pub use pdf::{pdf_to_document, pdf_to_document_with_options, PdfConversionOptions};

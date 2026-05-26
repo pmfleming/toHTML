@@ -16,8 +16,10 @@ workflows. It is not intended to be a pixel-perfect renderer.
 
 The default output is a complete HTML document.
 
-The generated document must not include CSS or JavaScript. Structure should come
-from HTML elements and attributes only.
+The generated document must not include JavaScript. Structure should come from
+HTML elements and attributes first. Minimal CSS is allowed only where HTML cannot
+express the readable-output requirement, such as cell alignment, and must not be
+used to recreate PDF page positioning.
 
 Core output structures include:
 
@@ -101,7 +103,8 @@ DOCX pass.
 
 1. Write and lock this implementation goal and scope.
 2. Expand the shared document model.
-3. Build the full no-CSS/no-JS HTML renderer.
+3. Build the full semantic HTML renderer with no JavaScript and only narrowly
+   justified CSS.
 4. Implement the repository-owned GitHub-flavored Markdown converter.
 5. Implement DOCX conversion for headings, paragraphs, lists, tables, and images.
 6. Implement selectable-text PDF conversion with empty placeholders for

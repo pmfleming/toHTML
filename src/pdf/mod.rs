@@ -1,15 +1,21 @@
 mod cmap;
 mod fonts;
+mod form;
 mod graphics;
 mod hex;
+mod images;
+mod inventronics;
 mod layout;
 #[cfg(test)]
 mod layout_tests;
 mod links;
+mod metadata;
 mod object;
 mod postprocess;
 mod streams;
 mod struct_tree;
+#[cfg(test)]
+mod tests;
 mod text;
 mod visual;
 
@@ -17,9 +23,29 @@ use crate::ConvertError;
 use crate::{Block, ConversionWarning, Document, PageBreak};
 use crate::{PagePlaceholder, PlaceholderReason, SourceFormat};
 
-use object::{PdfDictionary, PdfDictionaryExt, PdfObjects, PdfValue};
+use object::PdfObjects;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PdfConversionOptions {
+    pub include_images: bool,
+}
+
+impl Default for PdfConversionOptions {
+    fn default() -> Self {
+        Self {
+            include_images: true,
+        }
+    }
+}
 
 pub fn pdf_to_document(bytes: &[u8]) -> Result<Document, ConvertError> {
+    pdf_to_document_with_options(bytes, PdfConversionOptions::default())
+}
+
+pub fn pdf_to_document_with_options(
+    bytes: &[u8],
+    options: PdfConversionOptions,
+) -> Result<Document, ConvertError> {
     let extraction = streams::document_pages(bytes)?;
     let font_cmaps = cmap::font_cmaps(bytes)?;
     let font_metrics = fonts::font_metrics(bytes);
@@ -27,8 +53,8 @@ pub fn pdf_to_document(bytes: &[u8]) -> Result<Document, ConvertError> {
     let struct_roles = struct_tree::role_map(&objects);
     let mut document = Document::new();
     document.metadata.source_format = Some(SourceFormat::Pdf);
-    document.metadata.title = document_title(&objects);
-    document.metadata.language = document_language(&objects);
+    document.metadata.title = metadata::document_title(&objects);
+    document.metadata.language = metadata::document_language(&objects);
     document.warnings.extend(
         extraction
             .warnings
@@ -45,24 +71,107 @@ pub fn pdf_to_document(bytes: &[u8]) -> Result<Document, ConvertError> {
         let mut page_blocks = Vec::new();
         let mut page_segments = Vec::new();
         let mut page_shapes = Vec::new();
+        let mut page_font_metrics = font_metrics.clone();
+        page_font_metrics.extend(fonts::font_metrics_for_resources(
+            bytes,
+            &page.font_resources,
+        ));
         for stream in &page.streams {
             page_shapes.extend(graphics::extract_rectangles(stream));
-            let segments = text::extract_segments_with_fonts(
-                stream,
+        }
+        let (form_shapes, form_paths) =
+            form::form_xobject_graphics(&objects, &page.image_resources);
+        page_shapes.extend(form_shapes);
+        let page_images = if options.include_images {
+            images::extract_page_images(
+                bytes,
+                &objects,
+                &page.streams,
+                &page.image_resources,
+                page.page_number,
+                &mut document.warnings,
+            )
+        } else {
+            Vec::new()
+        };
+        let mut page_paths = page
+            .streams
+            .iter()
+            .flat_map(|stream| graphics::extract_paths(stream))
+            .chain(form_paths)
+            .map(|path| visual::VisualPath {
+                commands: path.commands,
+                fill: path.fill,
+                stroke: path.stroke,
+                stroke_width: path.stroke_width,
+                stroke_dasharray: path.stroke_dasharray,
+            })
+            .collect::<Vec<_>>();
+        page_paths.extend(page.ink_annotations.iter().flat_map(|annotation| {
+            let stroke = annotation
+                .color
+                .clone()
+                .unwrap_or_else(|| "#000000".to_string());
+            annotation
+                .paths
+                .iter()
+                .map(move |points| visual::VisualPath {
+                    commands: ink_path_commands(points),
+                    fill: None,
+                    stroke: Some(stroke.clone()),
+                    stroke_width: annotation.width,
+                    stroke_dasharray: None,
+                })
+        }));
+
+        let combined_stream = combined_page_stream(&page.streams);
+        if !combined_stream.is_empty() {
+            page_segments = text::extract_segments_with_fonts(
+                &combined_stream,
                 &font_cmaps,
-                &font_metrics,
+                &page_font_metrics,
                 &struct_roles,
             );
-            page_segments.extend(segments.iter().cloned());
-            page_blocks.extend(layout::blocks_from_segments(&segments));
+            page_segments.extend(form::form_xobject_text_segments(
+                &objects,
+                &page.image_resources,
+                &font_cmaps,
+                &page_font_metrics,
+                &struct_roles,
+            ));
+            inventronics::reconstruct_inventronics_quote_labels(
+                page.page_number,
+                page.height.unwrap_or(842.0),
+                &mut page_segments,
+            );
+            inventronics::tighten_overlapping_text_widths(&mut page_segments);
+            let semantic_segments = text::non_artifact_segments(&page_segments);
+            page_blocks.extend(layout::blocks_from_segments(&semantic_segments));
         }
-        if !page_segments.is_empty() || !page_shapes.is_empty() {
+        if !page_segments.is_empty()
+            || !page_shapes.is_empty()
+            || !page_images.is_empty()
+            || !page_paths.is_empty()
+        {
             visual_pages.push(visual::VisualPage {
                 page_number: page.page_number,
                 width: page.width,
                 height: page.height,
                 segments: page_segments,
                 shapes: page_shapes,
+                images: page_images,
+                paths: page_paths,
+                links: page
+                    .link_annotations
+                    .iter()
+                    .map(|annotation| visual::VisualLink {
+                        href: annotation.uri.clone(),
+                        x: annotation.rect.0,
+                        y: annotation.rect.1,
+                        width: annotation.rect.2,
+                        height: annotation.rect.3,
+                    })
+                    .collect(),
             });
         }
         if page_blocks.is_empty() {
@@ -106,48 +215,27 @@ pub fn pdf_to_document(bytes: &[u8]) -> Result<Document, ConvertError> {
     Ok(document)
 }
 
-fn document_title(objects: &PdfObjects) -> Option<String> {
-    let title = info_dictionary(objects)?.string_bytes("Title")?;
-    let decoded = text::decode_string(title);
-    let trimmed = decoded.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn document_language(objects: &PdfObjects) -> Option<String> {
-    let bytes = catalog_dictionary(objects)?.string_bytes("Lang")?;
-    let decoded = text::decode_string(bytes);
-    let trimmed = decoded.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn catalog_dictionary(objects: &PdfObjects) -> Option<&PdfDictionary> {
-    objects
-        .values()
-        .find(|object| object.type_name() == Some("Catalog"))
-        .and_then(|object| object.dictionary())
-}
-
-fn info_dictionary(objects: &PdfObjects) -> Option<&PdfDictionary> {
-    objects
-        .values()
-        .filter_map(|object| object.dictionary())
-        .find(|dictionary| {
-            dictionary.type_name_is_none()
-                && (dictionary.contains_key("Title")
-                    || dictionary.contains_key("Author")
-                    || dictionary.contains_key("Producer")
-                    || dictionary.contains_key("Creator"))
-        })
-}
-
-trait PdfDictionaryTypeCheck {
-    fn type_name_is_none(&self) -> bool;
-}
-
-impl PdfDictionaryTypeCheck for PdfDictionary {
-    fn type_name_is_none(&self) -> bool {
-        !matches!(self.get("Type"), Some(PdfValue::Name(_)))
+fn combined_page_stream(streams: &[Vec<u8>]) -> Vec<u8> {
+    let mut combined = Vec::new();
+    for stream in streams {
+        if !combined.is_empty() {
+            combined.push(b'\n');
+        }
+        combined.extend_from_slice(stream);
     }
+    combined
+}
+
+fn ink_path_commands(points: &[(f32, f32)]) -> Vec<graphics::PathCommand> {
+    let mut commands = Vec::new();
+    for (index, (x, y)) in points.iter().enumerate() {
+        if index == 0 {
+            commands.push(graphics::PathCommand::MoveTo(*x, *y));
+        } else {
+            commands.push(graphics::PathCommand::LineTo(*x, *y));
+        }
+    }
+    commands
 }
 
 fn add_empty_pdf_placeholder(document: &mut Document, pages: usize) {
@@ -182,245 +270,4 @@ fn add_image_text_warning(document: &mut Document, bytes: &[u8]) {
 fn has_image_xobject(bytes: &[u8]) -> bool {
     let text = String::from_utf8_lossy(bytes);
     text.contains("/Subtype /Image") || text.contains("/Subtype/Image")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extracts_simple_uncompressed_text_stream() {
-        let pdf = br#"%PDF-1.4
-1 0 obj << /Type /Page /Contents 2 0 R >> endobj
-2 0 obj << /Length 42 >>
-stream
-BT /F1 12 Tf 72 720 Td (Hello PDF) Tj ET
-endstream
-endobj
-%%EOF"#;
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert!(matches!(&document.blocks[0], Block::Paragraph(_)));
-        assert!(crate::render_html(&document).contains("Hello PDF"));
-        assert!(document
-            .metadata
-            .visual_html
-            .as_deref()
-            .unwrap_or_default()
-            .contains("pdf-text-fragment"));
-    }
-
-    #[test]
-    fn creates_placeholder_for_non_extractable_pdf() {
-        let pdf = br#"%PDF-1.4
-1 0 obj << /Type /Page >> endobj
-%%EOF"#;
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert!(matches!(document.blocks[0], Block::PagePlaceholder(_)));
-        assert!(document
-            .warnings
-            .iter()
-            .any(|warning| warning.message.contains("no selectable text")));
-    }
-
-    #[test]
-    fn warns_when_pdf_contains_image_content() {
-        let pdf = br#"%PDF-1.4
-1 0 obj << /Type /Page /Contents 2 0 R >> endobj
-2 0 obj << /Length 42 >>
-stream
-BT /F1 12 Tf 72 720 Td (Hello PDF) Tj ET
-endstream
-endobj
-3 0 obj << /Subtype/Image /Width 1 /Height 1 >> endobj
-%%EOF"#;
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert_eq!(document.warnings.len(), 1);
-        assert!(document.warnings[0]
-            .message
-            .contains("OCR is not performed"));
-    }
-
-    #[test]
-    fn converts_matching_uri_annotation_text_to_link() {
-        let pdf = br#"%PDF-1.4
-1 0 obj << /Type /Page /Contents 2 0 R /Annots [3 0 R] >> endobj
-2 0 obj << /Length 60 >>
-stream
-BT /F1 12 Tf 72 720 Td (https://example.test) Tj ET
-endstream
-endobj
-3 0 obj << /Subtype /Link /A << /S /URI /URI (https://example.test) >> >> endobj
-%%EOF"#;
-
-        let document = pdf_to_document(pdf).unwrap();
-        let html = crate::render_html(&document);
-
-        assert!(html.contains("<a href=\"https://example.test\">https://example.test</a>"));
-    }
-
-    #[test]
-    fn links_visible_uri_without_scheme_inside_table_cell() {
-        let mut blocks = vec![Block::Table(crate::Table {
-            rows: vec![crate::TableRow {
-                cells: vec![crate::TableCell::text(
-                    "see www.example.test for details",
-                    false,
-                )],
-                source: None,
-            }],
-            caption: None,
-            source: None,
-        })];
-
-        assert!(links::link_uri_in_blocks(
-            &mut blocks,
-            "http://www.example.test/"
-        ));
-
-        let html = crate::render_html(&Document {
-            blocks,
-            ..Document::new()
-        });
-        assert!(html.contains("<a href=\"http://www.example.test/\">www.example.test</a>"));
-    }
-
-    #[test]
-    fn links_visible_email_address_for_mailto_annotation() {
-        let mut blocks = vec![Block::paragraph("contact Person.Example@example.test")];
-
-        assert!(links::link_uri_in_blocks(
-            &mut blocks,
-            "mailto:Person.Example@example.test"
-        ));
-
-        let html = crate::render_html(&Document {
-            blocks,
-            ..Document::new()
-        });
-        assert!(html.contains(
-            "<a href=\"mailto:Person.Example@example.test\">Person.Example@example.test</a>"
-        ));
-    }
-
-    #[test]
-    fn ignores_binary_false_positive_uri_markers() {
-        let bytes = b"/URI (https://example.test) stream \0\0 /URI (\0\xffnot-a-link) endstream";
-
-        assert_eq!(
-            links::link_annotation_uris(bytes),
-            vec!["https://example.test"]
-        );
-    }
-
-    #[test]
-    fn preserves_catalog_language() {
-        let pdf = br#"%PDF-1.4
-1 0 obj << /Type /Catalog /Lang (nl-NL) >> endobj
-2 0 obj << /Type /Page /Contents 3 0 R >> endobj
-3 0 obj << /Length 42 >>
-stream
-BT /F1 12 Tf 72 720 Td (Hallo) Tj ET
-endstream
-endobj
-%%EOF"#;
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert_eq!(document.metadata.language.as_deref(), Some("nl-NL"));
-    }
-
-    #[test]
-    fn decodes_utf16be_catalog_language() {
-        // /Lang (þÿ\0e\0n\0-\0U\0S) — UTF-16BE BOM + ASCII as 16-bit code units.
-        let pdf: &[u8] = b"%PDF-1.4\n\
-1 0 obj << /Type /Catalog /Lang (\xfe\xff\x00e\x00n\x00-\x00U\x00S) >> endobj\n\
-2 0 obj << /Type /Page /Contents 3 0 R >> endobj\n\
-3 0 obj << /Length 42 >>\nstream\nBT /F1 12 Tf 72 720 Td (Hi) Tj ET\nendstream\nendobj\n%%EOF";
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert_eq!(document.metadata.language.as_deref(), Some("en-US"));
-    }
-
-    #[test]
-    fn extracts_document_title_from_info_dictionary() {
-        let pdf = br#"%PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj
-4 0 obj << /Length 42 >>
-stream
-BT /F1 12 Tf 72 720 Td (Body) Tj ET
-endstream
-endobj
-5 0 obj << /Title (Sample Report) /Producer (toHTML tests) >> endobj
-%%EOF"#;
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert_eq!(document.metadata.title.as_deref(), Some("Sample Report"));
-    }
-
-    #[test]
-    fn decodes_utf16be_document_title() {
-        // /Title (þÿ\0H\0i) — "Hi" as UTF-16BE.
-        let pdf: &[u8] = b"%PDF-1.4\n\
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
-3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj\n\
-4 0 obj << /Length 42 >>\nstream\nBT /F1 12 Tf 72 720 Td (Body) Tj ET\nendstream\nendobj\n\
-5 0 obj << /Title (\xfe\xff\x00H\x00i) >> endobj\n%%EOF";
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert_eq!(document.metadata.title.as_deref(), Some("Hi"));
-    }
-
-    #[test]
-    fn emits_page_break_between_pdf_pages() {
-        let pdf = br#"%PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj
-4 0 obj << /Length 42 >>
-stream
-BT /F1 12 Tf 72 720 Td (First) Tj ET
-endstream
-endobj
-5 0 obj << /Type /Page /Parent 2 0 R /Contents 6 0 R >> endobj
-6 0 obj << /Length 42 >>
-stream
-BT /F1 12 Tf 72 720 Td (Second) Tj ET
-endstream
-endobj
-%%EOF"#;
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert!(document
-            .blocks
-            .iter()
-            .any(|block| matches!(block, Block::PageBreak(_))));
-    }
-
-    #[test]
-    fn reports_encryption_as_extraction_risk() {
-        let pdf = br#"%PDF-1.4
-trailer << /Encrypt 4 0 R >>
-1 0 obj << /Type /Page >> endobj
-%%EOF"#;
-
-        let document = pdf_to_document(pdf).unwrap();
-
-        assert!(document
-            .warnings
-            .iter()
-            .any(|warning| warning.message.contains("encryption")));
-    }
 }

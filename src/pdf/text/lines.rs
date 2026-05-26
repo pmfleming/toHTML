@@ -1,4 +1,4 @@
-use super::strings::normalize_whitespace;
+use super::strings::{normalize_whitespace, repair_shifted_subset_words};
 use super::types::TextSegment;
 
 #[cfg(test)]
@@ -53,6 +53,10 @@ pub struct TextLine {
     pub font_size: f32,
     pub rotation: f32,
     pub role: Option<String>,
+    pub color: Option<String>,
+    pub font_family: Option<String>,
+    pub font_weight: Option<u16>,
+    pub font_style: Option<String>,
 }
 
 pub fn estimated_text_width(text: &str, font_size: f32) -> f32 {
@@ -82,6 +86,10 @@ fn to_text_line(mut cells: Vec<TextSegment>) -> TextLine {
         .map(|cell| cell.font_size)
         .fold(0.0_f32, f32::max);
     let role = cells.iter().find_map(|cell| cell.role.clone());
+    let color = cells.iter().find_map(|cell| cell.color.clone());
+    let font_family = cells.iter().find_map(|cell| cell.font_family.clone());
+    let font_weight = cells.iter().find_map(|cell| cell.font_weight);
+    let font_style = cells.iter().find_map(|cell| cell.font_style.clone());
     let rotation = cells.first().map(|cell| cell.rotation).unwrap_or_default();
     TextLine {
         text: join_line_segments(&cells),
@@ -91,6 +99,10 @@ fn to_text_line(mut cells: Vec<TextSegment>) -> TextLine {
         font_size,
         rotation,
         role,
+        color,
+        font_family,
+        font_weight,
+        font_style,
     }
 }
 
@@ -128,7 +140,7 @@ fn join_line_segments(segments: &[TextSegment]) -> String {
         previous_end = Some(segment.x + segment.width);
         previous_font = segment.font_size;
     }
-    normalize_whitespace(&text)
+    repair_shifted_subset_words(&normalize_whitespace(&text))
 }
 
 fn push_gap(text: &mut String, gap: f32, font_size: f32) {

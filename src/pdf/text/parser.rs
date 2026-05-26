@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use super::super::cmap::CMap;
 use super::super::fonts::FontMetrics;
+use super::emitter::SegmentEmitter;
+use super::operands::{push_array_text, DecodedText, Operand, OperandStack, TextArrayItem};
 use super::reader::{ArrayToken, MarkedProps, Reader, Token};
-use super::state::TextState;
-use super::strings::{is_readable_text, normalize_whitespace};
 use super::syntax::is_text_showing_operator;
 use super::types::TextSegment;
 
@@ -21,43 +21,11 @@ pub fn extract_segments_with_fonts(
 
 const POSITIONAL_JUMP_THRESHOLD: f32 = -1000.0;
 
-#[derive(Debug)]
-enum Operand {
-    Name(String),
-    Text(DecodedText),
-    ActualText(DecodedText),
-    TextArray(Vec<TextArrayItem>),
-    Number(f32),
-    Mcid(u32),
-}
-
-#[derive(Debug, Clone)]
-enum TextArrayItem {
-    Text(DecodedText),
-    Adjustment(f32),
-}
-
-#[derive(Debug, Clone)]
-struct DecodedText {
-    text: String,
-    raw: Vec<u8>,
-}
-
 struct TextParser<'a> {
     reader: Reader<'a>,
-    operands: Vec<Operand>,
+    operands: OperandStack,
     font_cmaps: &'a HashMap<String, CMap>,
     emitter: SegmentEmitter<'a>,
-}
-
-struct SegmentEmitter<'a> {
-    segments: Vec<TextSegment>,
-    state: TextState,
-    state_stack: Vec<TextState>,
-    marked_roles: Vec<String>,
-    actual_text_stack: Vec<Option<DecodedText>>,
-    font_metrics: &'a HashMap<String, FontMetrics>,
-    struct_roles: &'a HashMap<u32, String>,
 }
 
 impl<'a> TextParser<'a> {
@@ -69,7 +37,7 @@ impl<'a> TextParser<'a> {
     ) -> Self {
         Self {
             reader: Reader::new(bytes),
-            operands: Vec::new(),
+            operands: OperandStack::default(),
             font_cmaps,
             emitter: SegmentEmitter::new(font_metrics, struct_roles),
         }
@@ -151,13 +119,13 @@ impl<'a> TextParser<'a> {
     }
 
     fn push_latest_text(&mut self) {
-        if let Some(text) = self.latest_text() {
+        if let Some(text) = self.operands.latest_text() {
             self.emitter.push_decoded_segment(&text);
         }
     }
 
     fn push_latest_array_split(&mut self) {
-        let Some(items) = self.latest_array() else {
+        let Some(items) = self.operands.latest_array() else {
             return;
         };
         let mut current = DecodedText {
@@ -165,6 +133,7 @@ impl<'a> TextParser<'a> {
             raw: Vec::new(),
         };
         let mut pending_space = false;
+        let mut pending_adjustment = 0.0;
 
         for item in &items {
             match item {
@@ -174,23 +143,27 @@ impl<'a> TextParser<'a> {
                 TextArrayItem::Adjustment(value) => {
                     if *value <= POSITIONAL_JUMP_THRESHOLD {
                         if !current.text.is_empty() {
-                            self.emitter.push_decoded_segment(&current);
+                            self.emitter
+                                .push_decoded_segment_with_adjustment(&current, pending_adjustment);
                             current = DecodedText {
                                 text: String::new(),
                                 raw: Vec::new(),
                             };
+                            pending_adjustment = 0.0;
                         }
                         self.emitter.apply_tj_adjustment(*value);
                         pending_space = false;
                     } else {
                         pending_space = pending_space || *value <= -120.0;
+                        pending_adjustment += *value;
                     }
                 }
             }
         }
 
         if !current.text.is_empty() {
-            self.emitter.push_decoded_segment(&current);
+            self.emitter
+                .push_decoded_segment_with_adjustment(&current, pending_adjustment);
         }
     }
 
@@ -209,6 +182,10 @@ impl<'a> TextParser<'a> {
             "TL" => self.apply_leading(),
             "Tr" => self.apply_rendering_mode(),
             "Ts" => self.apply_text_rise(),
+            "g" => self.apply_fill_gray(),
+            "rg" => self.apply_fill_rgb(),
+            "k" => self.apply_fill_cmyk(),
+            "sc" | "scn" => self.apply_fill_color_components(),
             "Td" => self.move_text_position(false),
             "TD" => self.move_text_position(true),
             "Tm" => self.set_text_matrix(),
@@ -218,74 +195,107 @@ impl<'a> TextParser<'a> {
     }
 
     fn begin_marked_content(&mut self) {
-        let Some(tag) = self.latest_name() else {
+        let Some(tag) = self.operands.latest_name() else {
             return;
         };
         let role = self
+            .operands
             .latest_mcid()
             .and_then(|mcid| self.emitter.struct_role(mcid))
             .unwrap_or(tag);
         self.emitter
-            .begin_marked_content(role, self.latest_actual_text());
-    }
-
-    fn latest_mcid(&self) -> Option<u32> {
-        self.operands
-            .iter()
-            .rev()
-            .find_map(|operand| match operand {
-                Operand::Mcid(mcid) => Some(*mcid),
-                _ => None,
-            })
+            .begin_marked_content(role, self.operands.latest_actual_text());
     }
 
     fn apply_font(&mut self) {
-        if let Some(size) = self.latest_number() {
+        if let Some(size) = self.operands.latest_number() {
             self.emitter.set_font_size(size);
         }
-        if let Some(name) = self.latest_name() {
+        if let Some(name) = self.operands.latest_name() {
             self.emitter.set_font_name(name);
         }
     }
 
     fn apply_leading(&mut self) {
-        if let Some(leading) = self.latest_number() {
+        if let Some(leading) = self.operands.latest_number() {
             self.emitter.set_leading(leading);
         }
     }
 
     fn apply_character_spacing(&mut self) {
-        if let Some(spacing) = self.latest_number() {
+        if let Some(spacing) = self.operands.latest_number() {
             self.emitter.set_character_spacing(spacing);
         }
     }
 
     fn apply_word_spacing(&mut self) {
-        if let Some(spacing) = self.latest_number() {
+        if let Some(spacing) = self.operands.latest_number() {
             self.emitter.set_word_spacing(spacing);
         }
     }
 
     fn apply_horizontal_scaling(&mut self) {
-        if let Some(scaling) = self.latest_number() {
+        if let Some(scaling) = self.operands.latest_number() {
             self.emitter.set_horizontal_scaling(scaling);
         }
     }
 
     fn apply_text_rise(&mut self) {
-        if let Some(rise) = self.latest_number() {
+        if let Some(rise) = self.operands.latest_number() {
             self.emitter.set_text_rise(rise);
         }
     }
 
     fn apply_rendering_mode(&mut self) {
-        if let Some(mode) = self.latest_number() {
+        if let Some(mode) = self.operands.latest_number() {
             self.emitter.set_rendering_mode(mode as i32);
         }
     }
 
+    fn apply_fill_gray(&mut self) {
+        if let Some(value) = self.operands.latest_number() {
+            self.emitter.set_fill_gray(value);
+        }
+    }
+
+    fn apply_fill_rgb(&mut self) {
+        let values = self.operands.numbers();
+        if values.len() >= 3 {
+            self.emitter.set_fill_rgb(
+                values[values.len() - 3],
+                values[values.len() - 2],
+                values[values.len() - 1],
+            );
+        }
+    }
+
+    fn apply_fill_color_components(&mut self) {
+        let values = self.operands.numbers();
+        if values.len() >= 3 {
+            self.emitter.set_fill_rgb(
+                values[values.len() - 3],
+                values[values.len() - 2],
+                values[values.len() - 1],
+            );
+        } else if let Some(value) = values.last() {
+            self.emitter.set_fill_gray(*value);
+        }
+    }
+
+    fn apply_fill_cmyk(&mut self) {
+        let values = self.operands.numbers();
+        if values.len() >= 4 {
+            self.emitter.set_fill_cmyk(
+                values[values.len() - 4],
+                values[values.len() - 3],
+                values[values.len() - 2],
+                values[values.len() - 1],
+            );
+        }
+    }
+
     fn apply_quote_spacing(&mut self) {
-        let values: Vec<f32> = self.operands.iter().filter_map(number_operand).collect();
+        let values = self.operands.numbers();
         if values.len() >= 2 {
             self.emitter.set_word_spacing(values[values.len() - 2]);
             self.emitter.set_character_spacing(values[values.len() - 1]);
@@ -293,7 +303,7 @@ impl<'a> TextParser<'a> {
     }
 
     fn move_text_position(&mut self, update_leading: bool) {
-        let Some((tx, ty)) = self.latest_two_numbers() else {
+        let Some((tx, ty)) = self.operands.latest_two_numbers() else {
             return;
         };
         self.emitter.move_position(tx, ty);
@@ -303,79 +313,15 @@ impl<'a> TextParser<'a> {
     }
 
     fn set_text_matrix(&mut self) {
-        if let Some(values) = self.latest_six_numbers() {
+        if let Some(values) = self.operands.latest_six_numbers() {
             self.emitter.set_text_matrix(values);
         }
     }
 
     fn concat_matrix(&mut self) {
-        if let Some(values) = self.latest_six_numbers() {
+        if let Some(values) = self.operands.latest_six_numbers() {
             self.emitter.concat_matrix(values);
         }
-    }
-
-    fn latest_text(&self) -> Option<DecodedText> {
-        self.operands
-            .iter()
-            .rev()
-            .find_map(|operand| match operand {
-                Operand::Text(text) => Some(text.clone()),
-                _ => None,
-            })
-    }
-
-    fn latest_array(&self) -> Option<Vec<TextArrayItem>> {
-        self.operands
-            .iter()
-            .rev()
-            .find_map(|operand| match operand {
-                Operand::TextArray(items) => Some(items.clone()),
-                _ => None,
-            })
-    }
-
-    fn latest_number(&self) -> Option<f32> {
-        self.operands
-            .iter()
-            .rev()
-            .find_map(|operand| match operand {
-                Operand::Number(number) => Some(*number),
-                _ => None,
-            })
-    }
-
-    fn latest_two_numbers(&self) -> Option<(f32, f32)> {
-        let values: Vec<f32> = self.operands.iter().filter_map(number_operand).collect();
-        if values.len() < 2 {
-            return None;
-        }
-        let last = values.len() - 1;
-        Some((values[last - 1], values[last]))
-    }
-
-    fn latest_six_numbers(&self) -> Option<[f32; 6]> {
-        let values: Vec<f32> = self.operands.iter().filter_map(number_operand).collect();
-        last_six_numbers(&values)
-    }
-
-    fn latest_name(&self) -> Option<String> {
-        self.operands
-            .iter()
-            .rev()
-            .find_map(|operand| match operand {
-                Operand::Name(name) => Some(name.clone()),
-                _ => None,
-            })
-    }
-
-    fn latest_actual_text(&self) -> Option<DecodedText> {
-        self.operands
-            .iter()
-            .rev()
-            .find_map(|operand| match operand {
-                Operand::ActualText(text) => Some(text.clone()),
-                _ => None,
-            })
     }
 
     fn decode_text(&self, bytes: Vec<u8>) -> DecodedText {
@@ -387,177 +333,4 @@ impl<'a> TextParser<'a> {
             .unwrap_or_else(|| super::strings::decode_pdf_text_string(&bytes));
         DecodedText { text, raw: bytes }
     }
-}
-
-impl<'a> SegmentEmitter<'a> {
-    fn new(
-        font_metrics: &'a HashMap<String, FontMetrics>,
-        struct_roles: &'a HashMap<u32, String>,
-    ) -> Self {
-        Self {
-            segments: Vec::new(),
-            state: TextState::default(),
-            state_stack: Vec::new(),
-            marked_roles: Vec::new(),
-            actual_text_stack: Vec::new(),
-            font_metrics,
-            struct_roles,
-        }
-    }
-
-    fn into_segments(self) -> Vec<TextSegment> {
-        self.segments
-    }
-
-    fn push_decoded_segment(&mut self, decoded: &DecodedText) {
-        let replacement = self.current_actual_text();
-        let decoded = replacement.as_ref().unwrap_or(decoded);
-        let text =
-            super::strings::repair_shifted_subset_words(&normalize_whitespace(&decoded.text));
-        if !is_readable_text(&text) || !self.state.is_visible_text() || self.in_artifact() {
-            return;
-        }
-
-        let width = self.current_metrics().map(|metrics| {
-            metrics.text_width(&decoded.raw, self.state.font_size(), text.chars().count())
-        });
-        let segment = self
-            .state
-            .segment(text, width)
-            .with_role(self.current_role());
-        let advance = width.unwrap_or(segment.width);
-        self.state.advance_text(&segment.text, advance);
-        self.segments.push(segment);
-    }
-
-    fn begin_text_object(&mut self) {
-        self.state.begin_text_object();
-    }
-
-    fn next_line(&mut self) {
-        self.state.next_line();
-    }
-
-    fn apply_tj_adjustment(&mut self, value: f32) {
-        self.state.apply_tj_adjustment(value);
-    }
-
-    fn save_graphics_state(&mut self) {
-        self.state_stack.push(self.state.clone());
-    }
-
-    fn restore_graphics_state(&mut self) {
-        if let Some(state) = self.state_stack.pop() {
-            self.state = state;
-        }
-    }
-
-    fn begin_marked_content(&mut self, role: String, actual_text: Option<DecodedText>) {
-        self.marked_roles.push(role);
-        self.actual_text_stack.push(actual_text);
-    }
-
-    fn end_marked_content(&mut self) {
-        self.marked_roles.pop();
-        self.actual_text_stack.pop();
-    }
-
-    fn set_font_size(&mut self, size: f32) {
-        self.state.set_font_size(size);
-    }
-
-    fn set_font_name(&mut self, name: String) {
-        self.state.font_name = Some(name);
-    }
-
-    fn set_leading(&mut self, leading: f32) {
-        self.state.set_leading(leading);
-    }
-
-    fn set_character_spacing(&mut self, spacing: f32) {
-        self.state.set_character_spacing(spacing);
-    }
-
-    fn set_word_spacing(&mut self, spacing: f32) {
-        self.state.set_word_spacing(spacing);
-    }
-
-    fn set_horizontal_scaling(&mut self, scaling: f32) {
-        self.state.set_horizontal_scaling(scaling);
-    }
-
-    fn set_text_rise(&mut self, rise: f32) {
-        self.state.set_text_rise(rise);
-    }
-
-    fn set_rendering_mode(&mut self, mode: i32) {
-        self.state.set_rendering_mode(mode);
-    }
-
-    fn move_position(&mut self, tx: f32, ty: f32) {
-        self.state.move_position(tx, ty);
-    }
-
-    fn set_text_matrix(&mut self, values: [f32; 6]) {
-        self.state.set_text_matrix(values);
-    }
-
-    fn concat_matrix(&mut self, values: [f32; 6]) {
-        self.state.concat_matrix(values);
-    }
-
-    fn font_name(&self) -> Option<&str> {
-        self.state.font_name.as_deref()
-    }
-
-    fn struct_role(&self, mcid: u32) -> Option<String> {
-        self.struct_roles.get(&mcid).cloned()
-    }
-
-    fn current_metrics(&self) -> Option<&FontMetrics> {
-        self.font_name()
-            .and_then(|name| self.font_metrics.get(name))
-    }
-
-    fn current_role(&self) -> Option<String> {
-        self.marked_roles.last().cloned()
-    }
-
-    fn current_actual_text(&self) -> Option<DecodedText> {
-        self.actual_text_stack.last().cloned().flatten()
-    }
-
-    fn in_artifact(&self) -> bool {
-        self.marked_roles
-            .last()
-            .is_some_and(|role| role == "Artifact")
-    }
-}
-
-fn number_operand(operand: &Operand) -> Option<f32> {
-    match operand {
-        Operand::Number(number) => Some(*number),
-        _ => None,
-    }
-}
-
-fn last_six_numbers(values: &[f32]) -> Option<[f32; 6]> {
-    let values = values.get(values.len().checked_sub(6)?..)?;
-    Some([
-        values[0], values[1], values[2], values[3], values[4], values[5],
-    ])
-}
-
-fn push_array_text(text: &mut DecodedText, value: &DecodedText, pending_space: &mut bool) {
-    if *pending_space && needs_inserted_space(&text.text, &value.text) {
-        text.text.push(' ');
-        text.raw.push(b' ');
-    }
-    text.text.push_str(&value.text);
-    text.raw.extend_from_slice(&value.raw);
-    *pending_space = false;
-}
-
-fn needs_inserted_space(text: &str, value: &str) -> bool {
-    !text.ends_with(' ') && !value.starts_with(' ') && !text.is_empty() && !value.is_empty()
 }

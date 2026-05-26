@@ -1,3 +1,14 @@
+mod paths;
+#[cfg(test)]
+mod tests;
+mod tokens;
+
+use paths::{
+    dash_array, push_filled_path_rectangles, push_rectangles, push_stroked_path_lines,
+    push_vector_path, Path,
+};
+use tokens::{tokenize, Token};
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct RectShape {
     pub x: f32,
@@ -8,17 +19,51 @@ pub(super) struct RectShape {
     pub stroke: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct VectorPath {
+    pub commands: Vec<PathCommand>,
+    pub fill: Option<String>,
+    pub stroke: Option<String>,
+    pub stroke_width: f32,
+    pub stroke_dasharray: Option<Vec<f32>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum PathCommand {
+    MoveTo(f32, f32),
+    LineTo(f32, f32),
+    CubicTo(f32, f32, f32, f32, f32, f32),
+    Close,
+}
+
 pub(super) fn extract_rectangles(stream: &[u8]) -> Vec<RectShape> {
+    extract_graphics(stream).rectangles
+}
+
+pub(super) fn extract_paths(stream: &[u8]) -> Vec<VectorPath> {
+    extract_graphics(stream).paths
+}
+
+#[derive(Debug, Default)]
+struct GraphicsExtraction {
+    rectangles: Vec<RectShape>,
+    paths: Vec<VectorPath>,
+}
+
+fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
     let tokens = tokenize(stream);
     let mut state = GraphicsState::default();
     let mut stack = Vec::new();
     let mut operands = Vec::new();
     let mut pending_rects = Vec::new();
+    let mut path = Path::default();
     let mut shapes = Vec::new();
+    let mut vector_paths = Vec::new();
 
     for token in tokens {
         match token {
             Token::Number(value) => operands.push(value),
+            Token::NumberArray(values) => operands.extend(values),
             Token::Operator(operator) => {
                 match operator.as_str() {
                     "q" => stack.push(state.clone()),
@@ -44,6 +89,33 @@ pub(super) fn extract_rectangles(stream: &[u8]) -> Vec<RectShape> {
                         let values = last_operands::<3>(&operands);
                         state.stroke = Some(rgb(values));
                     }
+                    "scn" | "sc" => {
+                        if operands.len() >= 3 {
+                            let values = last_operands::<3>(&operands);
+                            state.fill = Some(rgb(values));
+                        } else if !operands.is_empty() {
+                            state.fill = Some(gray(operands[operands.len() - 1]));
+                        }
+                    }
+                    "SCN" | "SC" => {
+                        if operands.len() >= 3 {
+                            let values = last_operands::<3>(&operands);
+                            state.stroke = Some(rgb(values));
+                        } else if !operands.is_empty() {
+                            state.stroke = Some(gray(operands[operands.len() - 1]));
+                        }
+                    }
+                    "w" if !operands.is_empty() => {
+                        state.line_width = operands[operands.len() - 1].abs().max(0.25);
+                    }
+                    "d" if operands.len() >= 2 => {
+                        let dash_count = operands.len() - 1;
+                        state.dash_array = operands[..dash_count]
+                            .iter()
+                            .map(|value| value.abs())
+                            .filter(|value| *value > 0.0)
+                            .collect();
+                    }
                     "re" if operands.len() >= 4 => {
                         let values = last_operands::<4>(&operands);
                         pending_rects.push(
@@ -52,24 +124,110 @@ pub(super) fn extract_rectangles(stream: &[u8]) -> Vec<RectShape> {
                                 .transform_rect(values[0], values[1], values[2], values[3]),
                         );
                     }
+                    "m" if operands.len() >= 2 => {
+                        let values = last_operands::<2>(&operands);
+                        path.move_to(state.ctm.transform_point(values[0], values[1]));
+                    }
+                    "l" if operands.len() >= 2 => {
+                        let values = last_operands::<2>(&operands);
+                        path.line_to(state.ctm.transform_point(values[0], values[1]));
+                    }
+                    "c" if operands.len() >= 6 => {
+                        let values = last_operands::<6>(&operands);
+                        path.curve_to(
+                            state.ctm.transform_point(values[0], values[1]),
+                            state.ctm.transform_point(values[2], values[3]),
+                            state.ctm.transform_point(values[4], values[5]),
+                        );
+                    }
+                    "v" if operands.len() >= 4 => {
+                        let values = last_operands::<4>(&operands);
+                        if let Some(current) = path.current_point() {
+                            path.curve_to(
+                                current,
+                                state.ctm.transform_point(values[0], values[1]),
+                                state.ctm.transform_point(values[2], values[3]),
+                            );
+                        }
+                    }
+                    "y" if operands.len() >= 4 => {
+                        let values = last_operands::<4>(&operands);
+                        let end = state.ctm.transform_point(values[2], values[3]);
+                        path.curve_to(state.ctm.transform_point(values[0], values[1]), end, end);
+                    }
+                    "h" => path.close(),
                     "f" | "F" | "f*" => {
                         push_rectangles(&mut shapes, &pending_rects, state.fill.clone(), None);
+                        push_filled_path_rectangles(&mut shapes, &path, state.fill.clone());
+                        push_vector_path(
+                            &mut vector_paths,
+                            &path,
+                            state.fill.clone(),
+                            None,
+                            state.line_width,
+                            None,
+                        );
                         pending_rects.clear();
+                        path.clear();
                     }
                     "S" | "s" => {
+                        if operator == "s" {
+                            path.close();
+                        }
                         push_rectangles(&mut shapes, &pending_rects, None, state.stroke.clone());
+                        if state.dash_array.is_empty() {
+                            push_stroked_path_lines(
+                                &mut shapes,
+                                &path,
+                                state.stroke.clone(),
+                                state.line_width,
+                            );
+                        }
+                        push_vector_path(
+                            &mut vector_paths,
+                            &path,
+                            None,
+                            state.stroke.clone(),
+                            state.line_width,
+                            dash_array(&state),
+                        );
                         pending_rects.clear();
+                        path.clear();
                     }
                     "B" | "B*" | "b" | "b*" => {
+                        if operator == "b" || operator == "b*" {
+                            path.close();
+                        }
                         push_rectangles(
                             &mut shapes,
                             &pending_rects,
                             state.fill.clone(),
                             state.stroke.clone(),
                         );
+                        push_filled_path_rectangles(&mut shapes, &path, state.fill.clone());
+                        if state.dash_array.is_empty() {
+                            push_stroked_path_lines(
+                                &mut shapes,
+                                &path,
+                                state.stroke.clone(),
+                                state.line_width,
+                            );
+                        }
+                        push_vector_path(
+                            &mut vector_paths,
+                            &path,
+                            state.fill.clone(),
+                            state.stroke.clone(),
+                            state.line_width,
+                            dash_array(&state),
+                        );
                         pending_rects.clear();
+                        path.clear();
                     }
-                    "n" => pending_rects.clear(),
+                    "n" => {
+                        pending_rects.clear();
+                        path.clear();
+                    }
                     _ => {}
                 }
                 operands.clear();
@@ -77,7 +235,10 @@ pub(super) fn extract_rectangles(stream: &[u8]) -> Vec<RectShape> {
         }
     }
 
-    shapes
+    GraphicsExtraction {
+        rectangles: shapes,
+        paths: vector_paths,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +246,8 @@ struct GraphicsState {
     ctm: Matrix,
     fill: Option<String>,
     stroke: Option<String>,
+    line_width: f32,
+    dash_array: Vec<f32>,
 }
 
 impl Default for GraphicsState {
@@ -93,6 +256,8 @@ impl Default for GraphicsState {
             ctm: Matrix::identity(),
             fill: Some("#000000".to_string()),
             stroke: Some("#000000".to_string()),
+            line_width: 1.0,
+            dash_array: Vec::new(),
         }
     }
 }
@@ -171,54 +336,6 @@ impl Matrix {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum Token {
-    Number(f32),
-    Operator(String),
-}
-
-fn tokenize(bytes: &[u8]) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        skip_ignored(bytes, &mut index);
-        if index >= bytes.len() {
-            break;
-        }
-        match bytes[index] {
-            b'(' => skip_literal_string(bytes, &mut index),
-            b'<' if bytes.get(index + 1) != Some(&b'<') => skip_hex_string(bytes, &mut index),
-            b'[' | b']' | b'<' | b'>' | b'/' => skip_delimited_token(bytes, &mut index),
-            _ => {
-                let word = read_word(bytes, &mut index);
-                if let Ok(value) = word.parse::<f32>() {
-                    tokens.push(Token::Number(value));
-                } else if !word.is_empty() {
-                    tokens.push(Token::Operator(word));
-                }
-            }
-        }
-    }
-    tokens
-}
-
-fn push_rectangles(
-    shapes: &mut Vec<RectShape>,
-    rectangles: &[RectShape],
-    fill: Option<String>,
-    stroke: Option<String>,
-) {
-    for rectangle in rectangles {
-        if rectangle.width.abs() < 0.25 || rectangle.height.abs() < 0.25 {
-            continue;
-        }
-        let mut shape = rectangle.clone();
-        shape.fill = fill.clone();
-        shape.stroke = stroke.clone();
-        shapes.push(shape);
-    }
-}
-
 fn last_operands<const N: usize>(operands: &[f32]) -> [f32; N] {
     let start = operands.len().saturating_sub(N);
     let mut values = [0.0; N];
@@ -242,100 +359,4 @@ fn rgb(values: [f32; 3]) -> String {
 
 fn color_channel(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
-}
-
-fn skip_ignored(bytes: &[u8], index: &mut usize) {
-    loop {
-        while bytes.get(*index).is_some_and(u8::is_ascii_whitespace) {
-            *index += 1;
-        }
-        if bytes.get(*index) != Some(&b'%') {
-            break;
-        }
-        while *index < bytes.len() && !matches!(bytes[*index], b'\r' | b'\n') {
-            *index += 1;
-        }
-    }
-}
-
-fn skip_literal_string(bytes: &[u8], index: &mut usize) {
-    *index += 1;
-    let mut depth = 1;
-    while *index < bytes.len() && depth > 0 {
-        match bytes[*index] {
-            b'\\' => *index = (*index + 2).min(bytes.len()),
-            b'(' => {
-                depth += 1;
-                *index += 1;
-            }
-            b')' => {
-                depth -= 1;
-                *index += 1;
-            }
-            _ => *index += 1,
-        }
-    }
-}
-
-fn skip_hex_string(bytes: &[u8], index: &mut usize) {
-    *index += 1;
-    while *index < bytes.len() && bytes[*index] != b'>' {
-        *index += 1;
-    }
-    if *index < bytes.len() {
-        *index += 1;
-    }
-}
-
-fn skip_delimited_token(bytes: &[u8], index: &mut usize) {
-    *index += 1;
-    while *index < bytes.len()
-        && !bytes[*index].is_ascii_whitespace()
-        && !matches!(
-            bytes[*index],
-            b'[' | b']' | b'<' | b'>' | b'(' | b')' | b'/'
-        )
-    {
-        *index += 1;
-    }
-}
-
-fn read_word(bytes: &[u8], index: &mut usize) -> String {
-    let start = *index;
-    while *index < bytes.len()
-        && !bytes[*index].is_ascii_whitespace()
-        && !matches!(
-            bytes[*index],
-            b'[' | b']' | b'<' | b'>' | b'(' | b')' | b'/'
-        )
-    {
-        *index += 1;
-    }
-    String::from_utf8_lossy(&bytes[start..*index]).to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extracts_filled_and_stroked_rectangles() {
-        let shapes = extract_rectangles(b"0.9 g 10 20 100 30 re f 0 G 10 20 100 30 re S");
-
-        assert_eq!(shapes.len(), 2);
-        assert_eq!(shapes[0].fill.as_deref(), Some("#e6e6e6"));
-        assert_eq!(shapes[1].stroke.as_deref(), Some("#000000"));
-        assert_eq!(shapes[0].x, 10.0);
-        assert_eq!(shapes[0].height, 30.0);
-    }
-
-    #[test]
-    fn applies_matrix_to_rectangles() {
-        let shapes = extract_rectangles(b"2 0 0 2 5 7 cm 10 20 100 30 re S");
-
-        assert_eq!(shapes[0].x, 25.0);
-        assert_eq!(shapes[0].y, 47.0);
-        assert_eq!(shapes[0].width, 200.0);
-        assert_eq!(shapes[0].height, 60.0);
-    }
 }

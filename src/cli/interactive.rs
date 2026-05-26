@@ -148,6 +148,7 @@ impl PickerApp {
         match convert_file(
             &input,
             self.format.format(),
+            false,
             Some(&output),
             asset_dir.as_deref(),
         ) {

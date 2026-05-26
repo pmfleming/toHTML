@@ -2,8 +2,21 @@
 /output/
 /input/
 /standard/
+/compare/
+/.claude/
+/.tools/
+node_modules/
+dist/
+.vite/
+__pycache__/
+.pytest_cache/
+htmlcov/
 *.pdb
 *.profraw
+*.py[cod]
+*.tsbuildinfo
+*.log
+.coverage
 .env
 .env.*
 
