@@ -20,7 +20,7 @@ fn wraps_rgb_pixels_as_png() {
         PdfValue::Name("DeviceRGB".to_string()),
     );
 
-    let png = png_from_raw_image(&dictionary, &[0xff, 0x00, 0x00]).unwrap();
+    let png = png_from_raw_image(&PdfObjects::default(), &dictionary, &[0xff, 0x00, 0x00]).unwrap();
 
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert!(png.windows(4).any(|window| window == b"IHDR"));
@@ -49,7 +49,7 @@ fn infers_rgb_color_from_decode_parameters() {
         )])),
     );
 
-    let png = png_from_raw_image(&dictionary, &[0x00, 0x80, 0xff]).unwrap();
+    let png = png_from_raw_image(&PdfObjects::default(), &dictionary, &[0x00, 0x80, 0xff]).unwrap();
 
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert_eq!(png[25], 2);
@@ -70,6 +70,32 @@ fn wraps_soft_masks_as_alpha_pngs() {
 
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert_eq!(png[25], 6);
+}
+
+#[test]
+fn wraps_four_bit_indexed_images_as_png() {
+    let mut dictionary = PdfDictionary::new();
+    dictionary.insert("Width".to_string(), PdfValue::Integer(2));
+    dictionary.insert("Height".to_string(), PdfValue::Integer(1));
+    dictionary.insert("BitsPerComponent".to_string(), PdfValue::Integer(4));
+    dictionary.insert(
+        "ColorSpace".to_string(),
+        PdfValue::Array(vec![
+            PdfValue::Name("Indexed".to_string()),
+            PdfValue::Name("DeviceRGB".to_string()),
+            PdfValue::Integer(2),
+            PdfValue::String(vec![
+                0x00, 0x00, 0x00, // index 0: black
+                0xff, 0xff, 0xff, // index 1: white
+                0x00, 0x80, 0xff, // index 2: blue
+            ]),
+        ]),
+    );
+
+    let png = png_from_raw_image(&PdfObjects::default(), &dictionary, &[0x12]).unwrap();
+
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(png[25], 2);
 }
 
 #[test]

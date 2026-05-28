@@ -1,4 +1,12 @@
-import type { FilePair, LibraryFile, LibraryResponse, PageCounts, ResolvedPage, ResolvedPairPage } from "./types";
+import type {
+  FileCoverage,
+  FilePair,
+  LibraryFile,
+  LibraryResponse,
+  PageCounts,
+  ResolvedPage,
+  ResolvedPairPage,
+} from "./types";
 
 const GENERATED_OUTPUT_VARIANT_SUFFIXES = [".include-images"];
 
@@ -52,6 +60,19 @@ export function pairFiles(inputFiles: LibraryFile[], outputFiles: LibraryFile[])
   return pairs;
 }
 
+export function fileCoverage(pairs: FilePair[]): FileCoverage {
+  return pairs.reduce<FileCoverage>(
+    (summary, pair) => ({
+      input: summary.input + (pair.input ? 1 : 0),
+      output: summary.output + (pair.output ? 1 : 0),
+      matched: summary.matched + (pair.input && pair.output ? 1 : 0),
+      missingOutput: summary.missingOutput + (pair.input && !pair.output ? 1 : 0),
+      extraOutput: summary.extraOutput + (!pair.input && pair.output ? 1 : 0),
+    }),
+    { input: 0, output: 0, matched: 0, missingOutput: 0, extraOutput: 0 },
+  );
+}
+
 export function pruneCounts(current: PageCounts, library: LibraryResponse): PageCounts {
   return {
     input: pruneSideCounts(current.input, library.input),
@@ -93,7 +114,7 @@ function bucketByMatchKey(files: LibraryFile[]) {
   const buckets = new Map<string, LibraryFile[]>();
   for (const file of files) {
     const key = matchKey(file);
-    buckets.set(key, preferMatchFiles([...(buckets.get(key) ?? []), file]));
+    buckets.set(key, sortMatchFiles([...(buckets.get(key) ?? []), file]));
   }
   return buckets;
 }
@@ -142,8 +163,8 @@ function stripGeneratedVariantSuffix(value: string) {
   return suffix ? value.slice(0, -suffix.length) : value;
 }
 
-function preferMatchFiles(files: LibraryFile[]) {
-  return [...files].sort(compareMatchFilePreference).slice(0, 1);
+function sortMatchFiles(files: LibraryFile[]) {
+  return [...files].sort(compareMatchFilePreference);
 }
 
 function compareMatchFilePreference(a: LibraryFile, b: LibraryFile) {

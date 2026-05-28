@@ -22,6 +22,25 @@ fn decodes_text_with_active_font_cmap() {
 }
 
 #[test]
+fn keeps_symbol_font_task_markers_from_active_cmap() {
+    let cmap = super::super::super::cmap::CMap::parse(
+        br#"
+        beginbfchar
+        <0039> <2713>
+        <0087> <F070>
+        endbfchar
+        "#,
+    );
+    let font_cmaps = HashMap::from([("F11".to_string(), cmap)]);
+    let stream = b"BT /F11 24 Tf <0087> Tj 28 0 Td <0039> Tj ET";
+
+    let segments =
+        extract_segments_with_fonts(stream, &font_cmaps, &HashMap::new(), &HashMap::new());
+
+    assert_eq!(segments_to_text(&segments), "□ ✓");
+}
+
+#[test]
 fn keeps_structural_table_values() {
     let stream = b"BT ([1..1]) Tj 40 0 Td (+) Tj ET";
 
@@ -30,9 +49,20 @@ fn keeps_structural_table_values() {
 
 #[test]
 fn skips_probable_symbol_font_noise() {
-    let stream = b"BT (}uW) Tj 20 0 Td (INDO Lighting) Tj 0 -20 Td (Dvo du v }v]]}vW) Tj ET";
+    let stream = b"BT (}uW) Tj 20 0 Td (Customer Name) Tj 0 -20 Td (Dvo du v }v]]}vW) Tj ET";
 
-    assert_eq!(extract_text(stream).as_deref(), Some("INDO Lighting"));
+    assert_eq!(extract_text(stream).as_deref(), Some("Customer Name"));
+}
+
+#[test]
+fn keeps_pdfdoc_bullet_marker() {
+    let stream = b"BT (\x80) Tj 20 0 Td (Product Feature) Tj ET";
+
+    let segments =
+        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+
+    assert_eq!(segments[0].text, "•");
+    assert_eq!(segments_to_text(&segments), "• Product Feature");
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 #[test]
 fn extracts_filled_and_stroked_rectangles() {
@@ -113,6 +114,22 @@ fn extracts_non_axis_aligned_stroked_paths() {
 }
 
 #[test]
+fn scales_stroked_path_width_by_current_transform() {
+    let paths = extract_paths(b"0.1 0 0 0.1 0 0 cm 0 G 16 w 10 20 m 30 40 l S");
+
+    assert_eq!(paths.len(), 1);
+    assert!((paths[0].stroke_width - 1.6).abs() < 0.01);
+}
+
+#[test]
+fn scales_axis_aligned_line_shapes_by_current_transform() {
+    let shapes = extract_rectangles(b"0.1 0 0 0.1 0 0 cm 0 G 16 w 10 20 m 110 20 l S");
+
+    assert_eq!(shapes.len(), 1);
+    assert!((shapes[0].height - 1.6).abs() < 0.01);
+}
+
+#[test]
 fn extracts_dashed_axis_aligned_paths() {
     let stream = b"[3 2] 0 d 0 G 1 w 10 20 m 110 20 l S";
     let paths = extract_paths(stream);
@@ -141,4 +158,56 @@ fn extracts_filled_bezier_paths() {
     assert_eq!(paths[0].fill.as_deref(), Some("#e61224"));
     assert_eq!(paths[0].stroke, None);
     assert!(matches!(paths[0].commands[1], PathCommand::CubicTo(..)));
+}
+
+#[test]
+fn extracts_shading_paint_from_active_clip_path() {
+    let paths = extract_paths(
+        b"1 0.4 0 rg
+10 20 m
+10 16 14 12 18 12 c
+120 12 l
+124 12 128 16 128 20 c
+128 42 l
+10 42 l
+h
+W n
+0 g
+/Sh0 sh",
+    );
+
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].fill.as_deref(), Some("#ff6600"));
+    assert_eq!(paths[0].stroke, None);
+    assert!(matches!(paths[0].commands[1], PathCommand::CubicTo(..)));
+}
+
+#[test]
+fn reuses_first_wide_shading_fill_when_current_fill_is_text_color() {
+    let paths = extract_paths(
+        b"1 0.4 0 rg
+10 20 m 10 16 14 12 18 12 c 180 12 l 184 12 188 16 188 20 c 188 42 l 10 42 l h
+W n /Sh0 sh
+0 0.62 0.725 rg
+210 20 m 210 16 214 12 218 12 c 380 12 l 384 12 388 16 388 20 c 388 42 l 210 42 l h
+W n /Sh1 sh",
+    );
+
+    assert_eq!(paths.len(), 2);
+    assert_eq!(paths[0].fill.as_deref(), Some("#ff6600"));
+    assert_eq!(paths[1].fill.as_deref(), Some("#ff6600"));
+}
+
+#[test]
+fn named_shading_resource_overrides_stale_fill_color() {
+    let shading_fills = HashMap::from([("Sh1".to_string(), "#ff6600".to_string())]);
+    let paths = extract_paths_with_shading_fills(
+        b"0 0.62 0.588 rg
+10 20 m 10 16 14 12 18 12 c 180 12 l 184 12 188 16 188 20 c 188 42 l 10 42 l h
+W n q 0 g /Sh1 sh Q",
+        &shading_fills,
+    );
+
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].fill.as_deref(), Some("#ff6600"));
 }

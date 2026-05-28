@@ -31,6 +31,7 @@ export interface RenderJob {
   scanned: number;
   total: number;
   completed: number;
+  failed: number;
   current: string | null;
   error: string | null;
 }
@@ -46,6 +47,14 @@ export interface FilePair {
   name: string;
   input: LibraryFile | null;
   output: LibraryFile | null;
+}
+
+export interface FileCoverage {
+  input: number;
+  output: number;
+  matched: number;
+  missingOutput: number;
+  extraOutput: number;
 }
 
 export interface ResolvedPage {

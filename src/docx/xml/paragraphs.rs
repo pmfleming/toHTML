@@ -200,6 +200,8 @@ fn add_blip_image(
         src: path,
         alt: None,
         title: None,
+        width: None,
+        height: None,
         asset_id: Some(asset_id),
         source: docx_source(),
     });

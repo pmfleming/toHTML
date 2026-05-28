@@ -145,6 +145,8 @@ pub struct Image {
     pub src: String,
     pub alt: Option<String>,
     pub title: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub asset_id: Option<String>,
     pub source: Option<SourceSpan>,
 }

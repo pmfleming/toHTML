@@ -14,10 +14,22 @@ The retained HTML must stand on its own: once generated, it must not rely on the
 original PDF, rendered PDF page images, JavaScript, or hidden source-PDF access
 to appear correct.
 
+All retained improvements must be generalizable parser, layout, rendering, or
+asset-extraction behavior. Do not add code paths keyed to one PDF, vendor,
+filename, document title, exact page number, exact coordinate packet, or known
+source phrase unless that check is a broadly valid PDF/layout signal. A cycle may
+learn from a specific PDF, but the kept solution must describe a reusable failure
+class and work from document structure, geometry, fonts, streams, metadata, or
+other source evidence that could appear in unrelated PDFs.
+
 Limited CSS means CSS is allowed only when it makes the recreated document more
 readable or inspectable and the same result cannot be expressed with semantic
 HTML alone. CSS must stay narrowly scoped to the generated PDF output, must not
 require JavaScript, and must not hide content-loss or extraction uncertainty.
+Do not write broad CSS. Prefer semantic HTML elements and attributes first, then
+use minimal CSS only where HTML cannot solve the readable-output problem. Any
+CSS exception must be narrowly scoped, documented in the cycle log, and must not
+recreate PDF page positioning.
 
 For each PDF, done requires:
 
@@ -48,6 +60,13 @@ Each improvement cycle works on exactly one area.
 
 3. Implement the improvement.
    - Keep the change narrow.
+   - Implement a general parser/layout/rendering rule, not a special path for a
+     named PDF, vendor, filename, page, or exact coordinate fixture.
+   - If a candidate fix uses literal text, page numbers, or coordinates from one
+     document, first convert it into a structural heuristic or reject it.
+   - Prefer semantic HTML elements and attributes over CSS. Do not add broad CSS;
+     any CSS exception must be minimal, narrowly scoped, documented, and must not
+     recreate PDF page positioning.
    - Add or update focused tests when the behavior can be reduced to a fixture.
    - Avoid unrelated cleanup inside the same cycle.
 
@@ -197,6 +216,10 @@ Stop the current cycle and narrow the attempt when any of these happen:
 5. The improvement cannot be described as one failure class anymore.
 6. The LLM visual review cannot identify a clear before/after improvement from
    the `pdf-web-compare` packet.
+7. The change introduces or preserves a document-specific special path instead
+   of a reusable rule grounded in PDF/layout evidence.
+8. A CSS exception is not narrowly scoped, is undocumented, or recreates PDF page
+   positioning instead of improving readable semantic output.
 
 When a stop rule fires, record the failed attempt and restart the cycle with a
 smaller hypothesis.

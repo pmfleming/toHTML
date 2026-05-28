@@ -7,6 +7,18 @@ pub(super) fn decode_utf16be(bytes: &[u8]) -> String {
         .collect()
 }
 
+pub(super) fn decode_shifted_subset_text(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .copied()
+        .filter_map(|byte| match byte {
+            b'\n' | b'\r' | b'\t' | b' ' => Some(' '),
+            0x21..=0x61 => Some(char::from(byte + 29)),
+            _ => pdf_doc_char(byte),
+        })
+        .collect()
+}
+
 pub(super) fn pdf_doc_char(byte: u8) -> Option<char> {
     match byte {
         b'\n' | b'\r' | b'\t' => Some(' '),

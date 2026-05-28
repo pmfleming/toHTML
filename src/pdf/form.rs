@@ -2,6 +2,10 @@ use super::object::{PdfDictionary, PdfDictionaryExt, PdfObjects, PdfValue};
 use super::{cmap, fonts, object};
 use super::{graphics, streams, text};
 
+mod content;
+
+use content::{last_name, last_numbers, tokenize_content, ContentOperand, ContentToken};
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct FormMatrix {
     a: f32,
@@ -54,16 +58,18 @@ impl FormMatrix {
 pub(super) fn form_xobject_text_segments(
     objects: &PdfObjects,
     resources: &std::collections::HashMap<String, object::PdfReference>,
+    content_streams: &[Vec<u8>],
     font_cmaps: &std::collections::HashMap<String, cmap::CMap>,
     font_metrics: &std::collections::HashMap<String, fonts::FontMetrics>,
     struct_roles: &std::collections::HashMap<u32, String>,
 ) -> Vec<text::TextSegment> {
     let mut visited = std::collections::HashSet::new();
     let mut segments = Vec::new();
-    for reference in resources.values() {
-        collect_form_xobject_text_segments(
+    for stream in content_streams {
+        collect_content_form_text_segments(
             objects,
-            *reference,
+            stream,
+            resources,
             FormMatrix::identity(),
             font_cmaps,
             font_metrics,
@@ -73,6 +79,31 @@ pub(super) fn form_xobject_text_segments(
         );
     }
     segments
+}
+
+fn collect_content_form_text_segments(
+    objects: &PdfObjects,
+    content_stream: &[u8],
+    resources: &std::collections::HashMap<String, object::PdfReference>,
+    initial_ctm: FormMatrix,
+    font_cmaps: &std::collections::HashMap<String, cmap::CMap>,
+    font_metrics: &std::collections::HashMap<String, fonts::FontMetrics>,
+    struct_roles: &std::collections::HashMap<u32, String>,
+    visited: &mut std::collections::HashSet<object::PdfReference>,
+    segments: &mut Vec<text::TextSegment>,
+) {
+    walk_content_xobjects(content_stream, resources, initial_ctm, |reference, ctm| {
+        collect_form_xobject_text_segments(
+            objects,
+            reference,
+            ctm,
+            font_cmaps,
+            font_metrics,
+            struct_roles,
+            visited,
+            segments,
+        );
+    });
 }
 
 fn collect_form_xobject_text_segments(
@@ -115,12 +146,10 @@ fn collect_form_xobject_text_segments(
                 .into_iter()
                 .map(|segment| transform_form_segment(segment, matrix)),
         );
-    }
-
-    for reference in xobject_resources(objects, dictionary).values() {
-        collect_form_xobject_text_segments(
+        collect_content_form_text_segments(
             objects,
-            *reference,
+            &stream,
+            &xobject_resources(objects, dictionary),
             matrix,
             font_cmaps,
             font_metrics,
@@ -144,14 +173,16 @@ fn transform_form_segment(mut segment: text::TextSegment, matrix: FormMatrix) ->
 pub(super) fn form_xobject_graphics(
     objects: &PdfObjects,
     resources: &std::collections::HashMap<String, object::PdfReference>,
+    content_streams: &[Vec<u8>],
 ) -> (Vec<graphics::RectShape>, Vec<graphics::VectorPath>) {
     let mut visited = std::collections::HashSet::new();
     let mut shapes = Vec::new();
     let mut paths = Vec::new();
-    for reference in resources.values() {
-        collect_form_xobject_graphics(
+    for stream in content_streams {
+        collect_content_form_graphics(
             objects,
-            *reference,
+            stream,
+            resources,
             FormMatrix::identity(),
             &mut visited,
             &mut shapes,
@@ -159,6 +190,65 @@ pub(super) fn form_xobject_graphics(
         );
     }
     (shapes, paths)
+}
+
+fn collect_content_form_graphics(
+    objects: &PdfObjects,
+    content_stream: &[u8],
+    resources: &std::collections::HashMap<String, object::PdfReference>,
+    initial_ctm: FormMatrix,
+    visited: &mut std::collections::HashSet<object::PdfReference>,
+    shapes: &mut Vec<graphics::RectShape>,
+    paths: &mut Vec<graphics::VectorPath>,
+) {
+    walk_content_xobjects(content_stream, resources, initial_ctm, |reference, ctm| {
+        collect_form_xobject_graphics(objects, reference, ctm, visited, shapes, paths);
+    });
+}
+
+fn walk_content_xobjects(
+    content_stream: &[u8],
+    resources: &std::collections::HashMap<String, object::PdfReference>,
+    initial_ctm: FormMatrix,
+    mut visit: impl FnMut(object::PdfReference, FormMatrix),
+) {
+    let mut ctm = initial_ctm;
+    let mut stack = Vec::new();
+    let mut operands = Vec::new();
+
+    for token in tokenize_content(content_stream) {
+        match token {
+            ContentToken::Number(value) => operands.push(ContentOperand::Number(value)),
+            ContentToken::Name(name) => operands.push(ContentOperand::Name(name)),
+            ContentToken::Operator(operator) => {
+                match operator.as_str() {
+                    "q" => stack.push(ctm),
+                    "Q" => ctm = stack.pop().unwrap_or(initial_ctm),
+                    "cm" => {
+                        if let Some(values) = last_numbers::<6>(&operands) {
+                            ctm = ctm.multiply(FormMatrix {
+                                a: values[0],
+                                b: values[1],
+                                c: values[2],
+                                d: values[3],
+                                e: values[4],
+                                f: values[5],
+                            });
+                        }
+                    }
+                    "Do" => {
+                        if let Some(name) = last_name(&operands) {
+                            if let Some(reference) = resources.get(name) {
+                                visit(*reference, ctm);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                operands.clear();
+            }
+        }
+    }
 }
 
 fn collect_form_xobject_graphics(
@@ -204,10 +294,15 @@ fn collect_form_xobject_graphics(
                 .into_iter()
                 .map(|path| transform_form_path(path, matrix)),
         );
-    }
-
-    for reference in xobject_resources(objects, dictionary).values() {
-        collect_form_xobject_graphics(objects, *reference, matrix, visited, shapes, paths);
+        collect_content_form_graphics(
+            objects,
+            &stream,
+            &xobject_resources(objects, dictionary),
+            matrix,
+            visited,
+            shapes,
+            paths,
+        );
     }
     visited.remove(&reference);
 }
@@ -343,3 +438,6 @@ fn pdf_number(value: &PdfValue) -> Option<f32> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

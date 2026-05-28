@@ -5,6 +5,9 @@ use super::super::text::{repair_shifted_subset_text, TextLine, TextSegment};
 pub(super) fn parse_table_with_header(lines: &[TextLine], index: usize) -> Option<(Table, usize)> {
     let reference = discover_columns(lines, index)?;
     let first_line = lines.get(index)?;
+    if starts_with_bullet_prose(first_line) {
+        return None;
+    }
     if !line_fits_columns(first_line, &reference) {
         return None;
     }
@@ -15,6 +18,9 @@ pub(super) fn parse_table_with_header(lines: &[TextLine], index: usize) -> Optio
     let mut header_emitted = false;
 
     for line in lines.iter().skip(index) {
+        if previous.is_some_and(|prev| table_row_gap(prev, line)) {
+            break;
+        }
         if row_originates_left_of_table(line, &reference) {
             break;
         }
@@ -46,7 +52,7 @@ pub(super) fn parse_table_with_header(lines: &[TextLine], index: usize) -> Optio
 }
 
 pub(super) fn tabular_line(line: &TextLine) -> bool {
-    tabular_cells(&table_cells(line))
+    !starts_with_bullet_prose(line) && tabular_cells(&table_cells(line))
 }
 
 fn discover_columns(lines: &[TextLine], index: usize) -> Option<Vec<f32>> {
@@ -57,7 +63,11 @@ fn discover_columns(lines: &[TextLine], index: usize) -> Option<Vec<f32>> {
 
     let mut occurrences = Vec::new();
     for (line_index, line) in window.iter().enumerate() {
-        occurrences.extend(line.cells.iter().map(|segment| (segment.x, line_index)));
+        occurrences.extend(
+            table_cells(line)
+                .into_iter()
+                .map(|cell| (cell.x, line_index)),
+        );
     }
 
     let columns = consensus_columns(&occurrences, window.len());
@@ -144,6 +154,12 @@ fn row_originates_left_of_table(line: &TextLine, reference: &[f32]) -> bool {
     starts_left_of_table(line, reference)
 }
 
+fn table_row_gap(previous: &TextLine, line: &TextLine) -> bool {
+    let gap = previous.y - line.y;
+    let line_height = previous.font_size.max(line.font_size).max(8.0);
+    gap > line_height * 2.5
+}
+
 fn starts_left_of_table(line: &TextLine, reference: &[f32]) -> bool {
     match (line.cells.first(), reference.first()) {
         (Some(segment), Some(first_column)) => segment.x + 6.0 < *first_column,
@@ -188,6 +204,18 @@ fn table_cells(line: &TextLine) -> Vec<TableTextCell> {
 
 fn table_cell_gap(font_size: f32) -> f32 {
     (font_size.max(8.0) * 1.75).max(18.0)
+}
+
+fn starts_with_bullet_prose(line: &TextLine) -> bool {
+    let text = line.text.trim_start();
+    if !(text.starts_with("• ") || text.starts_with("o ")) {
+        return false;
+    }
+    text.split_whitespace()
+        .filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= 2)
+        .count()
+        >= 4
+        && text.chars().any(char::is_lowercase)
 }
 
 fn tabular_cells(cells: &[TableTextCell]) -> bool {
@@ -257,7 +285,7 @@ fn table_row(cells: &[TableTextCell], header: bool) -> TableRow {
         cells: cells
             .iter()
             .map(|cell| {
-                let text = repair_shifted_subset_text(&cell.text);
+                let text = repair_table_cell_text(&cell.text);
                 TableCell {
                     content: vec![Inline::Text(text.clone())],
                     header,
@@ -270,6 +298,27 @@ fn table_row(cells: &[TableTextCell], header: bool) -> TableRow {
             .collect(),
         source: None,
     }
+}
+
+fn repair_table_cell_text(text: &str) -> String {
+    let mut text = repair_shifted_subset_text(text);
+    if looks_like_unbalanced_math_expression(&text) {
+        let opens = text.chars().filter(|ch| *ch == '(').count();
+        let closes = text.chars().filter(|ch| *ch == ')').count();
+        for _ in closes..opens {
+            text.push(')');
+        }
+    }
+    text
+}
+
+fn looks_like_unbalanced_math_expression(text: &str) -> bool {
+    let trimmed = text.trim_end();
+    trimmed.contains('=')
+        && trimmed.contains('(')
+        && !trimmed.ends_with(')')
+        && trimmed.chars().filter(|ch| *ch == '(').count()
+            > trimmed.chars().filter(|ch| *ch == ')').count()
 }
 
 fn append_cell_text(cell: &mut TableCell, text: &str) {

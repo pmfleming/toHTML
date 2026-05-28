@@ -29,6 +29,7 @@ pub struct PageContent {
     pub height: Option<f32>,
     pub image_resources: HashMap<String, PdfReference>,
     pub font_resources: HashMap<String, PdfReference>,
+    pub shading_resources: HashMap<String, String>,
     pub ink_annotations: Vec<InkAnnotation>,
     pub link_annotations: Vec<LinkAnnotation>,
 }
@@ -126,14 +127,7 @@ fn page_content(
     else {
         return Ok(PageContent {
             page_number,
-            streams: Vec::new(),
-            warnings: Vec::new(),
-            width: None,
-            height: None,
-            image_resources: HashMap::new(),
-            font_resources: HashMap::new(),
-            ink_annotations: Vec::new(),
-            link_annotations: Vec::new(),
+            ..PageContent::default()
         });
     };
     let page_dictionary = page.dictionary();
@@ -148,6 +142,10 @@ fn page_content(
     let font_resources = page
         .dictionary()
         .map(|dictionary| page_font_resources(objects, dictionary))
+        .unwrap_or_default();
+    let shading_resources = page
+        .dictionary()
+        .map(|dictionary| page_shading_resources(objects, dictionary))
         .unwrap_or_default();
     let ink_annotations = page_dictionary
         .map(|dictionary| page_ink_annotations(objects, dictionary))
@@ -182,6 +180,7 @@ fn page_content(
         height,
         image_resources,
         font_resources,
+        shading_resources,
         ink_annotations,
         link_annotations,
     })
@@ -367,6 +366,97 @@ fn page_font_resources(
             _ => None,
         })
         .collect()
+}
+
+fn page_shading_resources(
+    objects: &PdfObjects,
+    page: &super::object::PdfDictionary,
+) -> HashMap<String, String> {
+    let Some(resources) = inherited_resource_dictionary(objects, page) else {
+        return HashMap::new();
+    };
+    let Some(shadings) = dictionary_value(objects, resources.get("Shading")) else {
+        return HashMap::new();
+    };
+
+    shadings
+        .iter()
+        .filter_map(|(name, value)| Some((name.clone(), shading_color(objects, value)?)))
+        .collect()
+}
+
+fn shading_color(objects: &PdfObjects, value: &PdfValue) -> Option<String> {
+    let shading = dictionary_value(objects, Some(value))?;
+    let channels = color_space_channels(shading.get("ColorSpace")?)?;
+    function_color(objects, shading.get("Function")?, channels)
+}
+
+fn color_space_channels(value: &PdfValue) -> Option<usize> {
+    match value {
+        PdfValue::Name(name) if name == "DeviceRGB" => Some(3),
+        PdfValue::Name(name) if name == "DeviceGray" => Some(1),
+        PdfValue::Array(values) => values.first().and_then(color_space_channels),
+        _ => None,
+    }
+}
+
+fn function_color(objects: &PdfObjects, value: &PdfValue, channels: usize) -> Option<String> {
+    match value {
+        PdfValue::Dictionary(dictionary) => {
+            function_dictionary_color(objects, dictionary, channels)
+        }
+        PdfValue::Reference(reference) => objects
+            .get(*reference)
+            .or_else(|| objects.latest(reference.object))
+            .and_then(|object| object.dictionary())
+            .and_then(|dictionary| function_dictionary_color(objects, dictionary, channels)),
+        PdfValue::Array(values) => values
+            .iter()
+            .rev()
+            .find_map(|value| function_color(objects, value, channels)),
+        _ => None,
+    }
+}
+
+fn function_dictionary_color(
+    objects: &PdfObjects,
+    dictionary: &super::object::PdfDictionary,
+    channels: usize,
+) -> Option<String> {
+    match dictionary.integer("FunctionType")? {
+        2 => dictionary
+            .array("C1")
+            .or_else(|| dictionary.array("C0"))
+            .and_then(|values| color_from_array(values, channels)),
+        3 => dictionary
+            .array("Functions")?
+            .iter()
+            .rev()
+            .find_map(|value| function_color(objects, value, channels)),
+        _ => None,
+    }
+}
+
+fn color_from_array(values: &[PdfValue], channels: usize) -> Option<String> {
+    match channels {
+        1 => Some(gray_color(pdf_number(values.first()?)?)),
+        3 => {
+            let [red, green, blue, ..] = values else {
+                return None;
+            };
+            Some(rgb_color(
+                pdf_number(red)?,
+                pdf_number(green)?,
+                pdf_number(blue)?,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn gray_color(value: f32) -> String {
+    let channel = color_channel(value);
+    format!("#{channel:02x}{channel:02x}{channel:02x}")
 }
 
 fn inherited_resource_dictionary<'a>(

@@ -70,6 +70,27 @@ impl Path {
         self.current
     }
 
+    pub(super) fn has_drawing_commands(&self) -> bool {
+        self.commands.len() >= 2
+    }
+
+    pub(super) fn bounds(&self) -> Option<(f32, f32)> {
+        let mut points = self.commands.iter().flat_map(|command| match *command {
+            PathCommand::MoveTo(x, y) | PathCommand::LineTo(x, y) => vec![(x, y)],
+            PathCommand::CubicTo(x1, y1, x2, y2, x, y) => vec![(x1, y1), (x2, y2), (x, y)],
+            PathCommand::Close => Vec::new(),
+        });
+        let first = points.next()?;
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = (first.0, first.0, first.1, first.1);
+        for (x, y) in points {
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+        Some((max_x - min_x, max_y - min_y))
+    }
+
     pub(super) fn clear(&mut self) {
         self.current = None;
         self.start = None;

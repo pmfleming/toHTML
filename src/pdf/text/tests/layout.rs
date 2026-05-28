@@ -82,7 +82,7 @@ fn records_generic_color_space_text_color() {
 #[test]
 fn keeps_text_array_after_stream_boundary_state_operator() {
     let stream = b"BT /F1 1 Tf 10.98 0 0 10.98 72 630.12 Tm \
-        [(Inventronics is a global leader in the design and )]TJ \
+        [(Example text continues in the design and )]TJ \
         0.002 Tc \n -0.002 Tw [(man)4.4 (u)0.9 (f)3 (ac)2.9 (t)-0.8 (u)0.9 (r)3.7 (e)]TJ ET";
 
     let segments =

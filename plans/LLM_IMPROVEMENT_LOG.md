@@ -2621,3 +2621,1088 @@ Evidence:
   include IEC dense body text, formulas, diagrams, and TOCs, Installation
   diagram detail placement, IAF clipping, XML dense technical layout drift, and
   remaining fine layout drift in DREU and Silica.
+
+## Cycle 56
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 1 drew a large neutral
+matte vector path after embedded cover imagery in the reconstructed HTML, even
+though PDF painting is order-dependent. The late path covered the right-side
+photo with a solid gray block.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Large neutral filled vector paths that are paired with large page imagery should
+render before images, while small logo/vector paths remain above the image and
+text layers. The generated HTML must stay standalone and must not special-case a
+filename, vendor, page number, or exact coordinate packet.
+
+Files changed:
+
+`src/pdf/visual.rs`, `src/pdf/visual/tests/render_order.rs`,
+`output/HR_ 2025 PMP  Special Incentive EE_07012025.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for the separate cover-title glyph
+decoding issue.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test renders_large_covered_filled_paths_before_images`, `cargo test`,
+  and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-56-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 1 no longer has the large gray block covering the
+  right-side cover photo. Remaining visible gaps include the title/date glyph
+  decoding (`OMOR...`) and finer cover-art alignment.
+
+## Cycle 57
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 2 painted card
+backgrounds and header fills through vector paths and PDF shading operators
+after the extracted text in the reconstructed HTML. The result was empty cards:
+the text existed in HTML but was covered by late white paths, and the orange
+header shading was ignored.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Large filled container paths should render below card text while small filled
+logo/vector glyphs remain foreground paths. PDF `sh` shading paint clipped by a
+path should produce a standalone filled visual path, using a stable wide-shading
+fallback color rather than accidental body-text color. The solution must not
+special-case a filename, vendor, page number, or coordinate packet.
+
+Files changed:
+
+`src/pdf/graphics.rs`, `src/pdf/graphics/paths.rs`,
+`src/pdf/graphics/tests.rs`, `src/pdf/visual.rs`,
+`src/pdf/visual/tests/render_order.rs`,
+`output/HR_ 2025 PMP  Special Incentive EE_07012025.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for bold subset-glyph decoding in some
+card fragments.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test renders_large_filled_container_paths_before_text`, targeted
+  `cargo test extracts_shading_paint_from_active_clip_path`, targeted
+  `cargo test reuses_first_wide_shading_fill_when_current_fill_is_text_color`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-57-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 2 now shows the orange header bars and visible card
+  body text instead of blank cards. Remaining visible gaps include subset-glyph
+  decoding for fragments such as `22 L0 & L1`, `Applied`, and `Foundation`, plus
+  finer spacing/alignment drift.
+
+## Cycle 58
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 3 used a subset text
+encoding where some CMap-decoded table tokens were shifted 29 codepoints above
+their intended printable values. This left table labels and numeric cells as
+fragments such as `OMOR eN`, `NIQRUKMN`, `NIPUTKNQ`, and `iM C iN`.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Short downshifted table labels and numeric tokens should decode to visible
+values such as `2025 H1`, `1,458.01`, `1,387.14`, and `L0 & L1`, while ordinary
+plain identifiers such as `RMB` remain unchanged. The rule follows the text
+showing and ToUnicode/CMap extraction model described by PDF 32000-1:2008 /
+ISO 32000-2 text sections: source character codes are interpreted through the
+active font mapping before Unicode text is emitted, and post-CMap repair may
+only run when the resulting token shape is structurally numeric or a short table
+label. The solution must not special-case a filename, vendor, page number, or
+coordinate packet.
+
+Files changed:
+
+`src/pdf/text.rs`, `src/pdf/text/strings.rs`,
+`src/pdf/text/strings/shifted.rs`, `src/pdf/text/tests/repair.rs`,
+`src/pdf/visual/text_repair.rs`, `src/pdf/visual/tests/render_order.rs`,
+`src/pdf/mod.rs`, `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`,
+and `plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for the separate table cell positioning
+overlap and the still-ambiguous `ORB` percent tokens.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test decodes_downshifted_table_numbers_and_short_labels`, targeted
+  `cargo test repairs_downshifted_subset_text_when_rendering_fragments`,
+  targeted `cargo test repairs_downshifted_table_labels_at_visual_boundary`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-58-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 3 now restores `2025 H1` in the title/table headers
+  and restores the first two sales revenue values as `1,458.01` and `1,387.14`.
+  Remaining visible gaps include the separate x-position overlap between the
+  sales revenue values and weight column, plus `ORB` where the input shows
+  `25%`.
+
+## Cycle 59
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 4 paints rounded card
+backgrounds with clipped `sh` shading operations whose color comes from the
+page Shading resource dictionary. The converter tokenized only operators and
+numbers, so `/Sh1 sh` lost its resource name and fell back to a stale
+nonstroking fill color from earlier text/card content. This made the third
+card teal instead of orange.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Named PDF shading paints should use the active page shading resource color when
+available, including shading dictionaries stored inside compressed object
+streams, instead of using incidental graphics-state fill color. This follows
+PDF 32000-1:2008 / ISO 32000-2 painting semantics for the `sh` operator:
+shading color is defined by the named shading resource and its function/color
+space, while the current clipping path constrains where it is painted. The rule
+must remain resource/structure based and must not special-case the filename,
+page, card coordinates, or visible label text.
+
+Files changed:
+
+`src/pdf/object.rs`, `src/pdf/streams.rs`, `src/pdf/graphics.rs`,
+`src/pdf/graphics/tokens.rs`, `src/pdf/graphics/tests.rs`, `src/pdf/mod.rs`,
+`output/HR_ 2025 PMP  Special Incentive EE_07012025.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for separate text-decoding issues on
+the same page.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test named_shading_resource_overrides_stale_fill_color`, targeted
+  `cargo test expands_flate_decoded_object_stream_entries`, `cargo test`, and
+  `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-59-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 4 now renders the third card orange like the input,
+  while retaining the first orange card and middle teal card. Remaining visible
+  gaps are text-only: the Chinese quote remains garbled, bullets still display
+  as `Ł`, and `PMP`/`2025` fragments still appear as `303`/`OMORK`.
+
+## Cycle 60
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 6 uses a subset text
+mapping where fiscal-period labels are only partly shifted. The title's H2
+marker can arrive as a downshifted multi-word sequence, and table quarter
+headers can arrive as adjacent year plus compact quarter fragments. The previous
+repair treated those fragments as plain numbers, producing `e2`/`43`/`44`
+instead of `H2`/`Q3`/`Q4`.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Fiscal-period repairs must be grounded in decoded text shape and segment
+geometry: accept only compact `Hn(Qn+Qn)` expressions after downshifting, keep
+plain `Q1`-`Q4` labels stable through later repair passes, and repair split
+quarter fragments only when a `43`/`44` fragment is geometrically adjacent to a
+four-digit year on the same text line. This follows the PDF 32000-1:2008 /
+ISO 32000-2 text-showing and ToUnicode/CMap model: post-CMap cleanup may correct
+systematic subset-font decoding artifacts, but must remain token/geometry based
+and must not special-case a filename, page number, table coordinate, or visible
+HR phrase.
+
+Files changed:
+
+`src/pdf/text.rs`, `src/pdf/text/strings.rs`,
+`src/pdf/text/strings/shifted.rs`, `src/pdf/text/tests/repair.rs`,
+`src/pdf/visual/text_repair.rs`,
+`output/HR_ 2025 PMP  Special Incentive EE_07012025.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for separate negative-parenthesis,
+bullet-glyph, and note-spacing defects.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test decodes_mixed_fiscal_period_markers`, targeted
+  `cargo test repairs_split_fiscal_quarter_labels_after_year_segments`,
+  targeted `cargo test repairs_downshifted_table_labels_at_visual_boundary`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-60-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 6 now renders the title as `2025 H2(Q3+Q4)` and
+  shows Q3/Q4 labels in the budget/actual table headers instead of the previous
+  shifted `43`/`44` fragments. Remaining visible gaps are separate failure
+  classes: negative parenthesized values still show punctuation artifacts,
+  bullets still display as `Ł`, and the notes retain spacing/overlap issues.
+
+## Cycle 61
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 7 interval formulas use
+subset-shifted fiscal half labels split across adjacent text tokens, such as
+`OMOQe O`, `OMORe O`, and compact `OMORe2`. The prior fiscal repair handled
+H2 title/quarter markers but left these formula-table labels as unreadable
+fragments in rows that should reference `2024H2` and `2025H2`.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Post-CMap repair may combine adjacent decoded tokens only when the downshifted
+core forms a valid fiscal half label shaped as `20YYH1` or `20YYH2`, optionally
+with a formula-prefix glyph such as `=` or `(`. This remains grounded in the PDF
+32000-1:2008 / ISO 32000-2 text-showing and ToUnicode/CMap model: the cleanup
+corrects systematic subset-font decoding artifacts from token shape, not a
+document name, page number, coordinate, or specific HR phrase.
+
+Files changed:
+
+`src/pdf/text/strings/shifted.rs`, `src/pdf/text/tests/repair.rs`,
+`src/pdf/visual/text_repair.rs`,
+`output/HR_ 2025 PMP  Special Incentive EE_07012025.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for the separate operator/bullet glyph
+class and formula overlap issues.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test decodes_mixed_fiscal_period_markers`, targeted
+  `cargo test repairs_downshifted_table_labels_at_visual_boundary`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-61-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 7 interval rows now render fiscal labels as
+  `2024H2` and `2025H2` across the main actual/budget tables instead of
+  `OMOQe O`, `OMORe O`, or `OMORe2`. Remaining visible gaps are separate
+  failure classes: comparison/operator glyphs still appear as `Ł`, `ﬂ`, `E`,
+  `I`, `Œ`, and `>&`, and some formula/example text still overlaps.
+
+## Cycle 62
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 12 uses subset-font
+symbol markers for prose punctuation and list bullets. The decoded text exposed
+markers such as `>&`, `>'`, standalone `E`, `Ł`, doubled en-dash leaders, and
+split hyphenated compounds, producing `by––`, `>&Company...>'`, `Ł` bullets,
+and `Global -wise` / `Top- down` in the reconstructed HTML.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Post-CMap repair may restore symbol markers only from local token shape: exact
+standalone bullet markers become bullets, paired parenthesis markers become
+parentheses, prose-only standalone `E` before a parenthetical phrase becomes an
+opening parenthesis, doubled trailing leaders after alphabetic prose become dot
+leaders, and common alphabetic hyphen compounds collapse their accidental
+spacing. The rule follows the PDF 32000-1:2008 / ISO 32000-2 text-showing and
+ToUnicode/CMap model by correcting systematic subset-font glyph artifacts after
+font decoding, without special-casing a filename, page number, coordinate packet,
+or source phrase.
+
+Files changed:
+
+`src/pdf/text/strings.rs`, `src/pdf/text/strings/shifted.rs`,
+`src/pdf/text/tests/repair.rs`, `src/pdf/visual/text_layer.rs`,
+`src/pdf/visual/text_repair.rs`,
+`output/HR_ 2025 PMP  Special Incentive EE_07012025.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for separate formula/operator glyph
+repairs on later pages.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test repairs_shifted_symbol_markers_in_prose`, targeted
+  `cargo test repairs_shifted_symbol_markers_at_visual_boundary`, targeted
+  `cargo test decodes_mixed_fiscal_period_markers`, targeted
+  `cargo test repairs_downshifted_table_labels_at_visual_boundary`, targeted
+  `cargo test decodes_shifted_dash_wrapped_page_number_markers`, `cargo test`,
+  and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-62-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 12 now renders the contributor-recognition slide with
+  `Every contributor should be recognized by......`, restored parenthesized
+  descriptors, real bullet glyphs, and repaired `Top-down` / `Global-wise`
+  compounds instead of the previous `––`, `>&...>'`, `Ł`, and spaced-hyphen
+  artifacts. Remaining visible gaps on this page are scale/position differences,
+  not text-marker corruption.
+
+## Cycle 63
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 13 title text contains
+an alphabetic hyphenated compound split across separate positioned fragments.
+The text repair already normalized `Top-down`, but the visual renderer kept
+cell-level positioning because of the large source gap before the hyphen,
+leaving the rendered title as `Top        -down)`.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Dense/prose visual rendering should collapse accidental fragment gaps for
+common alphabetic hyphen compounds such as `Top-down` and `Global-wise`, while
+retaining cell-level rendering for tables, formulas, XML-like content, dot
+leaders, and numeric/operator rows. This follows PDF 32000-1:2008 /
+ISO 32000-2 text-showing behavior: visual glyph placement may split one logical
+word into separate text-showing fragments, so post-CMap line reconstruction may
+join only local prose-shaped compounds rather than using page-specific
+coordinates or phrases.
+
+Files changed:
+
+`src/pdf/visual/text_layer.rs`, `src/pdf/visual/tests/render_order.rs`,
+`output/HR_ 2025 PMP  Special Incentive EE_07012025.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for separate table/body spacing and
+formula/operator glyph issues on later pages.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test renders_broken_hyphenated_prose_title_as_repaired_line`,
+  targeted `cargo test repairs_shifted_symbol_markers_at_visual_boundary`,
+  targeted `cargo test repairs_shifted_symbol_markers_in_prose`, `cargo test`,
+  and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-63-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 13 now renders the title as one readable
+  `Strategic Project Rewarding (Company Level, Top-down)` line instead of
+  leaving a large gap before `-down)`. Remaining visible gaps on the page are
+  separate body/table layout issues.
+
+## Cycle 64
+
+Failure class:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf` page 15 uses Type0 CJK
+fonts named `/C2_0` and `/C2_1` whose font dictionaries are stored in a PDF
+object stream. The page resources exposed the font references, and the
+`/ToUnicode` CMaps were present, but the CMap loader still resolved font
+dictionaries through the legacy direct `N 0 obj` byte search. The Chinese
+heading decoded to unreadable fallback bytes and was filtered from the HTML,
+while the WinAnsi English `Thank you` remained.
+
+Target PDFs:
+
+`HR_ 2025 PMP  Special Incentive EE_07012025.pdf`.
+
+Acceptance check:
+
+Font CMap discovery must resolve page-local font resource dictionaries through
+the parsed PDF object model before reading `/ToUnicode`, including dictionaries
+expanded from `/ObjStm` object streams. This follows the object-stream model in
+PDF32000_2008 and ISO_32000-2, and the PDF 32000 text extraction model where
+text-showing bytes are mapped through the active font's `/ToUnicode` CMap. The
+fix must not special-case a filename, page number, coordinate packet, or Chinese
+phrase.
+
+Files changed:
+
+`src/pdf/cmap.rs`, `src/pdf/cmap/font_refs.rs`, `src/pdf/mod.rs`,
+`tests/conversion_fixtures.rs`,
+`output/HR_ 2025 PMP  Special Incentive EE_07012025.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for separate visual scale/layout
+differences on the thank-you slide.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test pdf_fixture_decodes_to_unicode_when_font_dictionary_is_in_object_stream`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/HR_ 2025 PMP  Special Incentive EE_07012025.html`.
+- pdf-web-compare packet:
+  `compare/cycle-64-focus/HR_ 2025 PMP  Special Incentive EE_07012025`.
+- LLM visual review: page 15 now renders the four restored Chinese glyphs
+  `感 谢 聆 听` above `Thank you`, matching the source content that was
+  previously missing. Remaining visible differences are text scale/position
+  differences, not missing CJK text.
+
+## Cycle 65
+
+Failure class:
+
+`IEC 61000-3-2 2018.pdf` page 11 definitions 3.11 and 3.12 contain prose
+encoded as several positioned `TJ` text-showing fragments around inline
+formula symbols. The visual renderer treated those fragments as independent
+cells, so the definition sentences collided. Separately, the shifted-subset
+repair accepted short plain acronyms and punctuation-adjacent acronym/number
+blends as numeric-looking shifted text, turning `RMS` into `506` in the visible
+definition prose.
+
+Target PDFs:
+
+`IEC 61000-3-2 2018.pdf`.
+
+Acceptance check:
+
+Definition prose lines with lower-case sentence text and inline symbol/math
+fragments should be reconstructed as a single readable visual line unless the
+page is a dense ruled table. Short plain acronyms such as `RMS`, punctuation-only
+tokens, and acronym+number blends such as `RMS40)` must not be downshifted into
+numeric artifacts. This follows the text-showing and extraction model in
+PDF32000_2008 and ISO_32000-2: positioned text fragments are painting
+operations, while extraction may reconstruct a logical reading line from the
+active text state, glyph text, and geometry. Per `plans/LLM_IMPROVEMENT_LOOP.md`,
+the fix is retained only as a geometry/text-shape rule rather than a filename,
+page-number, or coordinate special case.
+
+Files changed:
+
+`src/pdf/text/strings/shifted.rs`, `src/pdf/text/tests/repair.rs`,
+`src/pdf/visual.rs`, `src/pdf/visual/text_layer.rs`,
+`src/pdf/visual/text_repair.rs`, `src/pdf/visual/tests/render_order.rs`,
+`output/IEC 61000-3-2 2018.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for unrelated IEC header/source-line
+word joining and formula typography details elsewhere on the page.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test renders_definition_prose_with_inline_symbols_as_reconstructed_line`,
+  targeted `cargo test repairs_iec_definition_rms_fragments`, targeted
+  `cargo test decodes_downshifted_table_numbers_and_short_labels`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/IEC 61000-3-2 2018.html`.
+- pdf-web-compare packet:
+  `compare/cycle-65-focus/IEC 61000-3-2 2018`.
+- LLM visual review: page 11 now preserves `RMS` in definitions 3.10-3.12;
+  definition 3.12 renders as one readable
+  `total RMS value of the odd harmonic current components of orders 21 to 39,
+  expressed as:` line; and definition 3.11 no longer has the `506` artifact or
+  overlapping prose cells in the highlighted area.
+
+## Cycle 66
+
+Failure class:
+
+`IEC 61000-3-2 2018.pdf` page 40 contains a French foreword prose sentence
+whose standard number and committee classification fragments are emitted as
+separate positioned text cells. The line begins with an uppercase word
+(`La...`), so the previous lowercase-first prose heuristic missed it; wide gaps
+then caused the renderer to preserve individual cells, producing overlap around
+`IEC 61000-3-2`, `sous-comité 77A`, and `CEM`.
+
+Target PDFs:
+
+`IEC 61000-3-2 2018.pdf`.
+
+Acceptance check:
+
+Uppercase-started sentence prose with lower-case body words and inline
+identifier/classification fragments should be reconstructed as one visual line
+when there is no dense ruled table or dot-leader/page-number evidence. Contents
+leader rows and dense tables must remain positioned. Fragmented IEC standard
+number text may be normalized when the glyph fragments form the same structural
+identifier pattern. This follows the PDF32000_2008 and ISO_32000-2 text-showing
+model: separate glyph-painting operations and adjusted positions do not by
+themselves define separate logical cells. Per `plans/LLM_IMPROVEMENT_LOOP.md`,
+the retained fix uses font size, prose shape, line geometry, and identifier
+fragment structure, not a filename, page number, or coordinate special case.
+
+Files changed:
+
+`src/pdf/visual/text_layer.rs`, `src/pdf/visual/text_repair.rs`,
+`src/pdf/visual/tests/render_order.rs`,
+`output/IEC 61000-3-2 2018.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for unrelated French semantic fallback
+word order and header/footer identifier decoding issues.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test renders_uppercase_started_prose_with_wide_inline_fragments_as_line`,
+  targeted `cargo test keeps_contents_leader_page_numbers_positioned_on_dense_prose_pages`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/IEC 61000-3-2 2018.html`.
+- pdf-web-compare packet:
+  `compare/cycle-66-focus/IEC 61000-3-2 2018`.
+- LLM visual review: page 40 now renders the highlighted sentence as a readable
+  line:
+  `La Norme internationale IEC 61000-3-2 a été établie par le sous-comité 77A:
+  CEM`, followed by the readable second line
+  `Phénomènes basse fréquence, du comité d’études 77 de l'IEC: Compatibilité
+  électromagnétique.`
+
+## Cycle 67
+
+Failure class:
+
+`IEC 61000-3-2 2018.pdf` page 40 contains a short centered horizontal divider
+below the centered `COMMISSION ÉLECTROTECHNIQUE INTERNATIONALE` heading. The
+HTML visual recreation omitted that line, leaving the standards title page
+header visually incomplete.
+
+Target PDFs:
+
+`IEC 61000-3-2 2018.pdf`.
+
+Acceptance check:
+
+Centered standards title pages should preserve the small divider between the
+centered authority heading and the following centered title block. If the
+divider is already present as an extracted rectangle or vector path, it must not
+be duplicated. This follows the PDF painting model in `standard/PDF32000_2008.pdf`
+and `standard/ISO_32000-2_sponsored-ec2.pdf`: text and graphics are separate
+page-content painting operations, and a visual HTML recreation may use geometry
+and neighboring painted content to recover a missing simple graphic when the
+source path is not otherwise emitted. Per `plans/LLM_IMPROVEMENT_LOOP.md`, the
+retained fix is structural and geometry-based, not a filename or page-number
+special case.
+
+Files changed:
+
+`src/pdf/visual.rs`, `src/pdf/visual/tests/render_order.rs`,
+`output/IEC 61000-3-2 2018.html`, and `plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for unrelated IEC header identifier
+decoding and the `AVANT-PROPOS` shifted-text issue on the same page.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test renders_inferred_centered_title_divider_for_standards_title_page`,
+  targeted `cargo test does_not_duplicate_existing_centered_title_divider`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/IEC 61000-3-2 2018.html`.
+- pdf-web-compare packet:
+  `compare/cycle-67-focus/IEC 61000-3-2 2018`.
+- LLM visual review: page 40 now shows the short centered divider below
+  `COMMISSION ÉLECTROTECHNIQUE INTERNATIONALE`; the packet pair
+  `compare/cycle-67-focus/IEC 61000-3-2 2018/pairs/pair-page-040.png`
+  confirms the divider is present in the web render.
+
+## Cycle 68
+
+Failure class:
+
+`IEC 61000-3-2 2018.pdf` page 11 contains THC, THD, and POHC square-root
+formulas with summation operators. The converter preserved the radical strokes,
+upper/lower bounds, and harmonic-current terms, but the `∑` glyph was absent in
+the HTML visual recreation.
+
+Target PDFs:
+
+`IEC 61000-3-2 2018.pdf`.
+
+Acceptance check:
+
+Formula clusters with a harmonic-current label, numeric upper bound, lower
+`h ...` bound, and nearby `I`/`Ih` term should render the summation glyph when
+the source glyph did not survive text extraction. If a real `Σ`/`∑` segment is
+already present in that formula cluster, the renderer must not duplicate it.
+This follows the PDF text/graphics painting model in `standard/PDF32000_2008.pdf`
+and `standard/ISO_32000-2_sponsored-ec2.pdf`: math notation can be split across
+positioned text fragments and vector strokes, so visual reconstruction may use
+the neighboring painted structure to recover a missing operator. Per
+`plans/LLM_IMPROVEMENT_LOOP.md`, the retained fix is geometry/text-structure
+based rather than a filename or page-number special case.
+
+Files changed:
+
+`src/pdf/visual.rs`, `src/pdf/visual/tests/render_order.rs`,
+`output/IEC 61000-3-2 2018.html`, and `plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for separate formula typography issues
+such as missing equals signs and `h=...` baseline details, plus unrelated IEC
+header identifier decoding.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test renders_inferred_sum_marker_in_harmonic_formula_cluster`,
+  targeted `cargo test does_not_duplicate_existing_sum_marker_in_formula_cluster`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/IEC 61000-3-2 2018.html`.
+- pdf-web-compare packet:
+  `compare/cycle-68-focus/IEC 61000-3-2 2018`.
+- LLM visual review: page 11 now shows `∑` in the THC, THD, and POHC formulas;
+  the packet pair
+  `compare/cycle-68-focus/IEC 61000-3-2 2018/pairs/pair-page-011.png`
+  confirms the summation operator is present in the web render.
+
+## Cycle 69
+
+Failure class:
+
+Oracle monthly ticket reports encode checklist task markers as symbol-font text.
+The unchecked boxes were mapped through a Wingdings ToUnicode private-use value
+and then dropped as unreadable symbol noise; the checked task marker was also
+at risk because standalone check glyphs contain no alphanumeric characters.
+
+Target PDFs:
+
+`Oracle ERP Ticket Monthly Report-01-Dec-24.pdf` and sibling Oracle monthly
+ticket reports with the same checklist pattern.
+
+Acceptance check:
+
+Standalone checklist markers from an active font CMap should survive text
+extraction, render as visible task markers, and must not be treated as repeated
+table-column anchors by column repair. This follows the PDF character-code,
+CMap, and text-showing model in `standard/PDF32000_2008.pdf` and
+`standard/ISO_32000-2_sponsored-ec2.pdf`: a glyph may be emitted as text with a
+font-specific Unicode mapping, including private-use values, and visual
+recreation should preserve that painted glyph as meaningful content. Per
+`plans/LLM_IMPROVEMENT_LOOP.md`, the retained fix is based on font/CMap and
+layout structure, not a filename or page-number special case.
+
+Files changed:
+
+`src/pdf/cmap/unicode.rs`, `src/pdf/cmap/tests.rs`,
+`src/pdf/text/strings.rs`, `src/pdf/text/tests/marked.rs`,
+`src/pdf/visual/text_layer.rs`, `src/pdf/visual/tests/render_order.rs`,
+`src/pdf/repair/columns.rs`, `src/pdf/repair/column_tests.rs`, regenerated
+Oracle monthly report HTML files under `output/`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for unrelated Oracle report visual
+differences such as title spacing and date punctuation around `Dec-2024`.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test pdf::cmap::tests::maps_wingdings_private_use_ballot_box_to_unicode_square`,
+  targeted
+  `cargo test pdf::text::tests::marked::keeps_symbol_font_task_markers_from_active_cmap`,
+  targeted
+  `cargo test pdf::visual::tests::render_order::renders_standalone_checkbox_symbol_as_box_marker`,
+  targeted
+  `cargo test pdf::repair::column_tests::does_not_treat_checklist_marker_column_as_table_anchor`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/Oracle ERP Ticket Monthly Report-01-Dec-24.html`,
+  `output/Oracle ERP Ticket Monthly Report-01-Oct-24.html`,
+  `output/Oracle ERP Ticket Monthly Report-04-Mar-25.html`,
+  `output/Oracle ERP Ticket Monthly Report-07-Apr-25.html`, and
+  `output/Oracle ERP Ticket Monthly Report-09-May-25.html`.
+- pdf-web-compare packet:
+  `compare/cycle-69-focus/Oracle ERP Ticket Monthly Report-01-Dec-24`.
+- LLM visual review: page 9 now shows the open checklist boxes, the checked
+  task marker, and the trailing empty task box in the `Next Plan` list; the
+  packet pair
+  `compare/cycle-69-focus/Oracle ERP Ticket Monthly Report-01-Dec-24/pairs/pair-page-009.png`
+  confirms the task marker column is present and the left-side `01` date token
+  no longer jumps into the checked task row.
+
+## Cycle 70
+
+Failure class:
+
+Chart pages with large image content kept raw title text fragments, so a
+parenthetical reporting-period heading could render as independently scaled
+pieces such as `Handling Time (Last` + `16` + `months)` or shifted text such as
+`E Last2 months )`.
+
+Target PDFs:
+
+`Oracle ERP Ticket Monthly Report-01-Oct-24.pdf` and sibling Oracle monthly
+ticket reports with top-of-page chart headings that include `(Last N months)`.
+
+Acceptance check:
+
+Top chart headings with a split parenthetical reporting period should render as
+one stable visual text run, while headings that already arrive as one complete
+PDF text object should remain positioned normally. This follows the PDF text
+positioning and showing model in `standard/PDF32000_2008.pdf` and
+`standard/ISO_32000-2_sponsored-ec2.pdf`: visually continuous text may be
+painted by multiple adjacent text-showing operations, and reconstruction can use
+line geometry and font runs rather than filename, page number, or exact
+coordinates. Per `plans/LLM_IMPROVEMENT_LOOP.md`, the retained fix is a focused
+rendering heuristic for one visible failure class.
+
+Files changed:
+
+`src/pdf/text/strings.rs`, `src/pdf/text/tests/repair.rs`,
+`src/pdf/visual.rs`, `src/pdf/visual/tests/render_order.rs`, regenerated Oracle
+monthly report HTML files under `output/`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual follow-up required for unrelated Oracle title-prefix
+spacing in the same chart pages.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test pdf::text::tests::repair::repairs_parenthetical_reporting_period_spacing`,
+  targeted
+  `cargo test pdf::visual::tests::render_order::reconstructs_split_reporting_period_heading_on_image_page`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated outputs:
+  `output/Oracle ERP Ticket Monthly Report-01-Dec-24.html`,
+  `output/Oracle ERP Ticket Monthly Report-01-Oct-24.html`,
+  `output/Oracle ERP Ticket Monthly Report-04-Mar-25.html`,
+  `output/Oracle ERP Ticket Monthly Report-07-Apr-25.html`, and
+  `output/Oracle ERP Ticket Monthly Report-09-May-25.html`.
+- pdf-web-compare packet:
+  `compare/cycle-70-focus/Oracle ERP Ticket Monthly Report-01-Oct-24`.
+- LLM visual review: page 7 now shows the blue heading as
+  `Handling Time (Last 16 months)` in a single span; the packet pair
+  `compare/cycle-70-focus/Oracle ERP Ticket Monthly Report-01-Oct-24/pairs/pair-page-007.png`
+  confirms the reported `Last N months` spacing/fragmentation defect is fixed.
+
+## Cycle 71
+
+Failure class:
+
+Wide-gap `o` subbullet prose in the Digital Dimming protocol was interpreted as
+table-like cells and visual fragments. This split shifted initial-capital words
+such as `Read igital D imming` across separate spans, causing the reported text
+collision and losing the intended `Digital Dimming` wording.
+
+Target PDF:
+
+`Digital Dimming V2.0 Communication Protocol Rev. A.pdf`, page 2, Available
+Commands list.
+
+Acceptance check:
+
+Subbullet prose that begins with `o ` and contains a sentence should remain a
+line/list item, not become a two-column table row. Split initial-capital
+fragments should rejoin into readable words such as `Digital`,
+`Dimming`, `Communication`, and `Protocol`, with punctuation repaired around the
+reported `Read Digital Dimming brightness level, returns value between 0-200`
+line. This follows the PDF text-showing and positioning model described in
+`standard/PDF32000_2008.pdf` and `standard/ISO_32000-2_sponsored-ec2.pdf`:
+adjacent text objects can represent one logical line, and geometry should not
+force prose into table cells when the content is a bullet sentence. Per
+`plans/LLM_IMPROVEMENT_LOOP.md`, this cycle keeps the fix scoped to one visible
+failure class.
+
+Files changed:
+
+`src/pdf/text/strings.rs`, `src/pdf/text/tests/repair.rs`,
+`src/pdf/visual/text_layer.rs`, `src/pdf/visual/tests/render_order.rs`,
+`src/pdf/layout.rs`, `src/pdf/layout/tables.rs`,
+`src/pdf/layout_tests.rs`, regenerated
+`output/Digital Dimming V2.0 Communication Protocol Rev. A.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual unrelated spacing issues still visible elsewhere on the
+Digital Dimming page.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test pdf::text::tests::repair::repairs_split_initial_capital_word_fragments`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated output:
+  `output/Digital Dimming V2.0 Communication Protocol Rev. A.html`.
+- pdf-web-compare packet:
+  `compare/cycle-71-focus/Digital Dimming V2.0 Communication Protocol Rev. A`.
+- LLM visual review: page 2 now shows `Read Digital Dimming Level` followed by
+  the subbullet
+  `Read Digital Dimming brightness level, returns value between 0-200` as
+  readable prose instead of overlapping `Read igital` / `D imming` fragments;
+  the packet pair
+  `compare/cycle-71-focus/Digital Dimming V2.0 Communication Protocol Rev. A/pairs/pair-page-002.png`
+  confirms the reported collision is fixed.
+
+## Cycle 72
+
+Failure class:
+
+Short legal prose pages with adjacent mixed-style PDF text objects were rendered
+as raw positioned fragments. That left no visible word gap across style
+boundaries (`elementsand`, `definedas`, `elementsconcerned`), kept shifted
+recital markers such as `ENNF`, and allowed long right-edge italic fragments to
+clip at the page boundary.
+
+Target PDF:
+
+`TA-9-2024-0130_EN 1.pdf`, page 12, recital 11.
+
+Acceptance check:
+
+Recital markers such as `ENNF` should decode to parenthesized recital numbers,
+joined legal-prose boundaries should recover readable word spacing, styled PDF
+text runs should remain visually separate without collapsing adjacent words, and
+long right-edge fragments should scale enough to stay inside the page. This
+follows the text-showing and positioning model in `standard/PDF32000_2008.pdf`
+and `standard/ISO_32000-2_sponsored-ec2.pdf`: one visual prose line may be
+painted by multiple adjacent text objects with independent font state, and
+reconstruction may use geometry plus text repair while preserving those style
+runs. Per `plans/LLM_IMPROVEMENT_LOOP.md`, the retained fix is scoped to this
+visible mixed-style legal-prose failure class.
+
+Files changed:
+
+`src/pdf/text/strings.rs`, `src/pdf/text/tests/repair.rs`,
+`src/pdf/visual.rs`, `src/pdf/visual/text_layer.rs`,
+`src/pdf/visual/tests/render_order.rs`, regenerated
+`output/TA-9-2024-0130_EN 1.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with residual typography differences in the same legal prose page that are
+not part of this failure class.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test pdf::text::tests::repair::repairs_recital_markers_and_joined_legal_prose_boundaries`,
+  targeted
+  `cargo test pdf::visual::tests::render_order::renders_short_style_fragmented_legal_prose_as_repaired_lines`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated output:
+  `output/TA-9-2024-0130_EN 1.html`.
+- pdf-web-compare packet:
+  `compare/cycle-72-focus/TA-9-2024-0130_EN 1/page-012-packet`.
+- LLM visual review: focused page 12 now shows `(11)` instead of `ENNF`, visible
+  gaps across mixed italic/plain style runs, corrected semantic text for
+  `The purpose of this Regulation is to ensure a...`, and right-edge legal prose
+  fragments that remain inside the rendered page; the packet pair
+  `compare/cycle-72-focus/TA-9-2024-0130_EN 1/page-012-packet/pairs/pair-page-001.png`
+  confirms the reported line-spacing and clipping class is fixed.
+
+## Cycle 73
+
+Failure class:
+
+Later shifted recital markers in CRA legal prose, specifically `EOOF` and
+`EOPF`, needed explicit regression coverage so they remain decoded as
+parenthesized recital numbers instead of leaking into the rendered output. The
+same affected line also used the shifted apostrophe form `Union™s`.
+
+Target PDF:
+
+`TA-9-2024-0130_EN 1.pdf`, page 26, recital 22, with the following page 27
+recital 23 checked as part of the same marker family.
+
+Acceptance check:
+
+`EOOF` should render as `(22)`, `EOPF` should render as `(23)`, and nearby
+legal possessives such as `Union™s` should render as `Union's`. This follows
+the PDF encoded text and ToUnicode repair model in `standard/PDF32000_2008.pdf`
+and `standard/ISO_32000-2_sponsored-ec2.pdf`: marker glyphs can arrive as
+font-subset encoded text and should be decoded through the same structural text
+repair path rather than treated as literal prose. Per
+`plans/LLM_IMPROVEMENT_LOOP.md`, this cycle is a focused regression guard for
+the visible recital-marker family.
+
+Files changed:
+
+`src/pdf/text/strings.rs`, `src/pdf/text/tests/repair.rs`, regenerated
+`output/TA-9-2024-0130_EN 1.html`, and `plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept.
+
+Evidence:
+
+- tests: `cargo fmt`, targeted
+  `cargo test pdf::text::tests::repair::repairs_recital_markers_and_joined_legal_prose_boundaries`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated output:
+  `output/TA-9-2024-0130_EN 1.html`.
+- pdf-web-compare packet:
+  `compare/cycle-73-focus/TA-9-2024-0130_EN 1/page-026-packet`.
+- LLM visual review: focused page 26 now shows `(22)` rather than `EOOF`, and
+  the line reads `Union's dependency`; the next page contains `(23)` rather than
+  `EOPF`. The packet pair
+  `compare/cycle-73-focus/TA-9-2024-0130_EN 1/page-026-packet/pairs/pair-page-001.png`
+  confirms the reported marker leak is fixed.
+
+## Cycle 74
+
+Failure class:
+
+PDF URL text can arrive as separate painted text and link annotations, where a
+long URL fragment is painted on the preceding prose baseline even though its
+annotation rectangle is on the following baseline. The same link line can carry
+shifted-subset fragments around ISO catalogue prose.
+
+Target PDF:
+
+`XML-Message-for-SCT-Version-7.0-February-2013-1.pdf`, page 8, the general XSD
+download sentence.
+
+Acceptance check:
+
+The visible `www.iso20022.org` home link should use the annotation width rather
+than being compressed, the long
+`www.iso20022.org/documents/messages/pain/schemas/pain.001.001.03.zip` URL
+should render on the lower annotation baseline instead of overlapping the
+catalogue prose, and the semantic HTML should split the catalogue sentence from
+the full URL link. This follows `plans/LLM_IMPROVEMENT_LOOP.md` and the PDF link
+annotation/text geometry model in `standard/PDF32000_2008.pdf` and
+`standard/ISO_32000-2_sponsored-ec2.pdf`.
+
+Files changed:
+
+`src/pdf/visual.rs`, `src/pdf/visual/text_repair.rs`,
+`src/pdf/visual/tests/render_order.rs`, `src/pdf/postprocess.rs`,
+`src/pdf/mod.rs`, regenerated
+`output/XML-Message-for-SCT-Version-7.0-February-2013-1.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept, with broader shifted-subset ISO text elsewhere in the XML guide left for a
+separate cycle.
+
+Evidence:
+
+- tests: `cargo test` and `cargo check --all-targets` passed.
+- regenerated output:
+  `output/XML-Message-for-SCT-Version-7.0-February-2013-1.html`.
+- pdf-web-compare packet:
+  `compare/cycle-74-focus/XML-Message-for-SCT-Version-7.0-February-2013-1/packet`.
+- LLM visual review: focused page 8 now shows the home link at readable width
+  and the full ZIP URL on the next line aligned with its underline/link
+  annotation, rather than overprinting the catalogue prose. The semantic HTML now
+  emits the catalogue sentence and the ZIP URL as separate paragraphs. The pair
+  image
+  `compare/cycle-74-focus/XML-Message-for-SCT-Version-7.0-February-2013-1/packet/pairs/pair-page-001.png`
+  confirms the reported overlap is fixed.
+
+## Cycle 75
+
+Failure class:
+
+Repeated-column repair treated a dense ruled table row as two-column prose. When
+the row already had real text at the next repeated x anchor, the repair still
+snapped the second table cell onto that occupied anchor, causing labels such as
+`Batch Booking` to overlap XML tags such as `<BtchBookg>`.
+
+Target PDF:
+
+`XML-Message-for-SCT-Version-7.0-February-2013-1.pdf`, page 17, the payment
+information table rows `2.2` through `2.27`.
+
+Acceptance check:
+
+The ruled table should keep row number, label, XML tag, cardinality, and type in
+separate visible columns. In particular, labels from rows `2.3` through `2.26`
+must remain at the label-column x anchor instead of being moved onto the XML tag
+column. This follows `plans/LLM_IMPROVEMENT_LOOP.md` and the PDF text/graphics
+painting model in `standard/PDF32000_2008.pdf` and
+`standard/ISO_32000-2_sponsored-ec2.pdf`: repeated vector rules do not mean a
+painted text run may be relocated onto an already occupied text state position.
+
+Files changed:
+
+`src/pdf/repair/columns.rs`, `src/pdf/repair/column_tests.rs`, regenerated
+`output/XML-Message-for-SCT-Version-7.0-February-2013-1.html`, and
+`plans/LLM_IMPROVEMENT_LOG.md`.
+
+Result:
+
+kept.
+
+Evidence:
+
+- tests: targeted `cargo test pdf::repair::column_tests -- --nocapture`,
+  `cargo test`, and `cargo check --all-targets` passed.
+- regenerated output:
+  `output/XML-Message-for-SCT-Version-7.0-February-2013-1.html`.
+- pdf-web-compare packet:
+  `compare/cycle-75-focus/XML-Message-for-SCT-Version-7.0-February-2013-1/packet`.
+- LLM visual review: focused page 17 now keeps labels like `Batch Booking`,
+  `Number Of Transactions`, `Debtor Account`, and `Charges Account Agent` in the
+  second table column, with `<BtchBookg>`, `<NbOfTxs>`, `<DbtrAcct>`, and
+  `<ChrgsAcctAgt>` in the XML tag column. The pair image
+  `compare/cycle-75-focus/XML-Message-for-SCT-Version-7.0-February-2013-1/packet/pairs/pair-page-001.png`
+  confirms the reported table collapse is fixed.

@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Token {
+    Name(String),
     Number(f32),
     NumberArray(Vec<f32>),
     Operator(String),
@@ -17,7 +18,8 @@ pub(super) fn tokenize(bytes: &[u8]) -> Vec<Token> {
             b'(' => skip_literal_string(bytes, &mut index),
             b'<' if bytes.get(index + 1) != Some(&b'<') => skip_hex_string(bytes, &mut index),
             b'[' => tokens.push(Token::NumberArray(read_number_array(bytes, &mut index))),
-            b']' | b'<' | b'>' | b'/' => skip_delimited_token(bytes, &mut index),
+            b'/' => tokens.push(Token::Name(read_name(bytes, &mut index))),
+            b']' | b'<' | b'>' => skip_delimited_token(bytes, &mut index),
             _ => {
                 let word = read_word(bytes, &mut index);
                 if let Ok(value) = word.parse::<f32>() {
@@ -114,6 +116,21 @@ fn skip_delimited_token(bytes: &[u8], index: &mut usize) {
     {
         *index += 1;
     }
+}
+
+fn read_name(bytes: &[u8], index: &mut usize) -> String {
+    *index += 1;
+    let start = *index;
+    while *index < bytes.len()
+        && !bytes[*index].is_ascii_whitespace()
+        && !matches!(
+            bytes[*index],
+            b'[' | b']' | b'<' | b'>' | b'(' | b')' | b'/'
+        )
+    {
+        *index += 1;
+    }
+    String::from_utf8_lossy(&bytes[start..*index]).to_string()
 }
 
 fn read_word(bytes: &[u8], index: &mut usize) -> String {

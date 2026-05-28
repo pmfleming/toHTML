@@ -46,6 +46,16 @@ pub(super) fn text_score(text: &str) -> i32 {
     common * 12 + embedded_common * 6 + vowel_words * 3 - suspicious * 8 - weird * 10
 }
 
+pub(super) fn shifted_beats_decoded(shifted: &str, decoded: &str, required_gain: i32) -> bool {
+    let shifted_score = text_score(shifted);
+    let decoded_score = text_score(decoded);
+    if required_gain == 0 {
+        shifted != decoded && shifted_score > decoded_score
+    } else {
+        shifted_score > decoded_score + required_gain
+    }
+}
+
 fn common_word(word: &str) -> bool {
     matches!(
         word,

@@ -113,7 +113,7 @@ fn extract_image_data(
     } else {
         (
             "image/png",
-            encoding::png_from_raw_image(dictionary, &data)?,
+            encoding::png_from_raw_image(objects, dictionary, &data)?,
         )
     };
     let mask_src = soft_mask_src(objects, dictionary);

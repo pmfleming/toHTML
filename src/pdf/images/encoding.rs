@@ -2,9 +2,11 @@ use std::io::Write;
 
 use flate2::{write::ZlibEncoder, Compression};
 
-use super::super::object::{PdfDictionary, PdfDictionaryExt, PdfValue};
+use super::super::object::{PdfDictionary, PdfDictionaryExt, PdfObjects, PdfReference, PdfValue};
+use super::super::streams;
 
 pub(super) fn png_from_raw_image(
+    objects: &PdfObjects,
     dictionary: &PdfDictionary,
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
@@ -12,26 +14,13 @@ pub(super) fn png_from_raw_image(
     let width = image_dimension(dictionary, "Width")?;
     let height = image_dimension(dictionary, "Height")?;
     let bits_per_component = dictionary.integer("BitsPerComponent").unwrap_or(8);
-    if bits_per_component != 8 {
-        return Err(format!("unsupported image bit depth {bits_per_component}"));
-    }
-    let color = png_color(dictionary, data, width, height)?;
-    let channels = color.channels();
+    let prepared = prepare_image(objects, dictionary, data, width, height, bits_per_component)?;
     let row_len = width
-        .checked_mul(channels)
+        .checked_mul(prepared.color.channels())
         .ok_or_else(|| "image dimensions are too large".to_string())?;
-    let expected_len = row_len
-        .checked_mul(height)
-        .ok_or_else(|| "image dimensions are too large".to_string())?;
-    if data.len() < expected_len {
-        return Err(format!(
-            "raw image stream is shorter than expected ({} < {expected_len})",
-            data.len()
-        ));
-    }
 
-    let mut scanlines = Vec::with_capacity(expected_len + height);
-    for row in data[..expected_len].chunks(row_len) {
+    let mut scanlines = Vec::with_capacity(prepared.pixels.len() + height);
+    for row in prepared.pixels.chunks(row_len) {
         scanlines.push(0);
         scanlines.extend_from_slice(row);
     }
@@ -42,7 +31,7 @@ pub(super) fn png_from_raw_image(
     ihdr.extend_from_slice(&(width as u32).to_be_bytes());
     ihdr.extend_from_slice(&(height as u32).to_be_bytes());
     ihdr.push(8);
-    ihdr.push(color.png_type());
+    ihdr.push(prepared.color.png_type());
     ihdr.extend_from_slice(&[0, 0, 0]);
     push_png_chunk(&mut png, b"IHDR", &ihdr);
     push_png_chunk(&mut png, b"IDAT", &zlib_compress(&scanlines)?);
@@ -146,6 +135,207 @@ impl PngColor {
             Self::Rgb => 2,
         }
     }
+}
+
+#[derive(Debug)]
+struct PreparedImage {
+    color: PngColor,
+    pixels: Vec<u8>,
+}
+
+fn prepare_image(
+    objects: &PdfObjects,
+    dictionary: &PdfDictionary,
+    data: &[u8],
+    width: usize,
+    height: usize,
+    bits_per_component: i64,
+) -> Result<PreparedImage, String> {
+    let bits = usize::try_from(bits_per_component)
+        .ok()
+        .filter(|bits| matches!(*bits, 1 | 2 | 4 | 8))
+        .ok_or_else(|| format!("unsupported image bit depth {bits_per_component}"))?;
+
+    if let Some(palette) = indexed_palette(objects, dictionary)? {
+        let indices = unpack_component_samples(data, width, height, 1, bits)?;
+        let channels = palette.color.channels();
+        let mut pixels = Vec::with_capacity(indices.len() * channels);
+        for index in indices {
+            let offset = usize::from(index)
+                .checked_mul(channels)
+                .ok_or_else(|| "indexed image palette offset is too large".to_string())?;
+            let color = palette
+                .lookup
+                .get(offset..offset + channels)
+                .ok_or_else(|| format!("indexed image palette is missing entry {}", index))?;
+            pixels.extend_from_slice(color);
+        }
+        return Ok(PreparedImage {
+            color: palette.color,
+            pixels,
+        });
+    }
+
+    let color = png_color(dictionary, data, width, height)?;
+    let channels = color.channels();
+    let mut pixels = unpack_component_samples(data, width, height, channels, bits)?;
+    if bits < 8 {
+        let max = ((1u16 << bits) - 1) as u8;
+        for sample in &mut pixels {
+            *sample = ((*sample as u16 * 255) / u16::from(max)) as u8;
+        }
+    }
+    Ok(PreparedImage { color, pixels })
+}
+
+#[derive(Debug)]
+struct IndexedPalette {
+    color: PngColor,
+    lookup: Vec<u8>,
+}
+
+fn indexed_palette(
+    objects: &PdfObjects,
+    dictionary: &PdfDictionary,
+) -> Result<Option<IndexedPalette>, String> {
+    let Some(PdfValue::Array(values)) = dictionary.get("ColorSpace") else {
+        return Ok(None);
+    };
+    if values.len() != 4 {
+        return Err(format!(
+            "unsupported image color space array with {} entries",
+            values.len()
+        ));
+    }
+    if !matches!(values.first(), Some(PdfValue::Name(name)) if name == "Indexed" || name == "I") {
+        return Ok(None);
+    }
+    let color = match values.get(1) {
+        Some(PdfValue::Name(name)) if name == "DeviceRGB" || name == "RGB" => PngColor::Rgb,
+        Some(PdfValue::Name(name)) if name == "DeviceGray" || name == "G" => PngColor::Grayscale,
+        Some(PdfValue::Array(base)) => indexed_base_color(base)?,
+        Some(PdfValue::Reference(reference)) => indexed_base_color_reference(objects, *reference)?,
+        _ => return Err("unsupported indexed image base color space".to_string()),
+    };
+    let high_value = match values.get(2) {
+        Some(PdfValue::Integer(value)) => usize::try_from(*value)
+            .ok()
+            .ok_or_else(|| format!("invalid indexed image high value {value}"))?,
+        _ => return Err("indexed image color space is missing high value".to_string()),
+    };
+    let lookup = lookup_bytes(objects, values.get(3))?;
+    let required_len = (high_value + 1)
+        .checked_mul(color.channels())
+        .ok_or_else(|| "indexed image palette is too large".to_string())?;
+    if lookup.len() < required_len {
+        return Err(format!(
+            "indexed image palette is shorter than expected ({} < {required_len})",
+            lookup.len()
+        ));
+    }
+    Ok(Some(IndexedPalette {
+        color,
+        lookup: lookup[..required_len].to_vec(),
+    }))
+}
+
+fn indexed_base_color(values: &[PdfValue]) -> Result<PngColor, String> {
+    match values.first() {
+        Some(PdfValue::Name(name)) if name == "DeviceRGB" || name == "RGB" => Ok(PngColor::Rgb),
+        Some(PdfValue::Name(name)) if name == "DeviceGray" || name == "G" => {
+            Ok(PngColor::Grayscale)
+        }
+        _ => Err("unsupported indexed image base color space".to_string()),
+    }
+}
+
+fn indexed_base_color_reference(
+    objects: &PdfObjects,
+    reference: PdfReference,
+) -> Result<PngColor, String> {
+    let Some(object) = objects
+        .get(reference)
+        .or_else(|| objects.latest(reference.object))
+    else {
+        return Err("indexed image base color space reference was not found".to_string());
+    };
+    match &object.value {
+        PdfValue::Name(name) if name == "DeviceRGB" || name == "RGB" => Ok(PngColor::Rgb),
+        PdfValue::Name(name) if name == "DeviceGray" || name == "G" => Ok(PngColor::Grayscale),
+        PdfValue::Array(values) => indexed_base_color(values),
+        _ => Err("unsupported indexed image base color space".to_string()),
+    }
+}
+
+fn lookup_bytes(objects: &PdfObjects, value: Option<&PdfValue>) -> Result<Vec<u8>, String> {
+    match value {
+        Some(PdfValue::String(bytes)) => Ok(bytes.clone()),
+        Some(PdfValue::Reference(reference)) => {
+            let Some(object) = objects
+                .get(*reference)
+                .or_else(|| objects.latest(reference.object))
+            else {
+                return Err("indexed image lookup reference was not found".to_string());
+            };
+            let dictionary = object
+                .dictionary()
+                .ok_or_else(|| "indexed image lookup object is not a stream".to_string())?;
+            let stream = object
+                .stream
+                .as_deref()
+                .ok_or_else(|| "indexed image lookup object has no stream data".to_string())?;
+            streams::decoded_stream_data(dictionary, stream)
+                .map_err(|error| format!("could not decode indexed image lookup stream ({error})"))
+        }
+        _ => Err("indexed image color space is missing lookup data".to_string()),
+    }
+}
+
+fn unpack_component_samples(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    samples_per_pixel: usize,
+    bits: usize,
+) -> Result<Vec<u8>, String> {
+    let samples_per_row = width
+        .checked_mul(samples_per_pixel)
+        .ok_or_else(|| "image dimensions are too large".to_string())?;
+    let row_bits = samples_per_row
+        .checked_mul(bits)
+        .ok_or_else(|| "image dimensions are too large".to_string())?;
+    let row_bytes = row_bits.div_ceil(8);
+    let expected_len = row_bytes
+        .checked_mul(height)
+        .ok_or_else(|| "image dimensions are too large".to_string())?;
+    if data.len() < expected_len {
+        return Err(format!(
+            "raw image stream is shorter than expected ({} < {expected_len})",
+            data.len()
+        ));
+    }
+    if bits == 8 {
+        let pixel_len = samples_per_row
+            .checked_mul(height)
+            .ok_or_else(|| "image dimensions are too large".to_string())?;
+        let mut pixels = Vec::with_capacity(pixel_len);
+        for row in data[..expected_len].chunks(row_bytes) {
+            pixels.extend_from_slice(&row[..samples_per_row]);
+        }
+        return Ok(pixels);
+    }
+
+    let mask = (1u8 << bits) - 1;
+    let mut samples = Vec::with_capacity(samples_per_row * height);
+    for row in data[..expected_len].chunks(row_bytes) {
+        for index in 0..samples_per_row {
+            let bit_index = index * bits;
+            let byte = row[bit_index / 8];
+            let shift = 8 - bits - (bit_index % 8);
+            samples.push((byte >> shift) & mask);
+        }
+    }
+    Ok(samples)
 }
 
 fn png_color(

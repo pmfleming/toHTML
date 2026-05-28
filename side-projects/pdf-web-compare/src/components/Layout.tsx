@@ -1,18 +1,21 @@
 import { ChevronLeft, ChevronRight, RotateCcw } from "lucide-react";
-import type { LibraryResponse, ResolvedPairPage } from "../types";
+import type { FileCoverage, LibraryResponse, ResolvedPairPage } from "../types";
 import { clamp } from "../utils";
 
 export function StatusBar({
   currentPage,
   totals,
+  coverage,
 }: {
   currentPage: number;
   totals: { input: number; output: number; combined: number };
+  coverage: FileCoverage;
 }) {
   return (
     <section className="statusbar" aria-label="Comparison status">
       <Metric value={currentPage} label="current page" />
       <Metric value={totals.combined} label="total comparable pages" />
+      <Metric value={`${coverage.matched}/${coverage.input}`} label="input files matched" />
       <Metric value={totals.input} label="input pages" />
       <Metric value={totals.output} label="output pages" />
     </section>
@@ -110,7 +113,7 @@ export function FolderHints({ library }: { library: LibraryResponse | null }) {
   );
 }
 
-function Metric({ value, label }: { value: number; label: string }) {
+function Metric({ value, label }: { value: number | string; label: string }) {
   return (
     <div>
       <strong>{value}</strong>

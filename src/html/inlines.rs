@@ -1,6 +1,6 @@
 use crate::{Image, Inline, Link};
 
-use super::attrs::{push_attr, push_end_tag};
+use super::attrs::{push_attr, push_end_tag, push_number_attr};
 use super::escape::push_escaped;
 
 pub fn render_inlines(html: &mut String, inlines: &[Inline]) {
@@ -13,6 +13,8 @@ pub fn render_image_tag(html: &mut String, image: &Image) {
     html.push_str("<img");
     push_attr(html, "src", &image.src);
     push_attr(html, "alt", image.alt.as_deref().unwrap_or(""));
+    push_number_attr(html, "width", image.width.map(u64::from));
+    push_number_attr(html, "height", image.height.map(u64::from));
     if let Some(title) = &image.title {
         push_attr(html, "title", title);
     }

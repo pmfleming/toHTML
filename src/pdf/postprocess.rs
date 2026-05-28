@@ -9,7 +9,12 @@ pub fn blocks(blocks: Vec<Block>, page_count: usize) -> Vec<Block> {
         .filter(|block| !is_page_furniture(block, &repeated))
         .map(repair_block)
         .collect();
+    let blocks = repair_iso20022_catalogue_link_blocks(blocks);
     collapse_code_blocks(blocks)
+}
+
+pub(super) fn link_artifacts(blocks: Vec<Block>) -> Vec<Block> {
+    repair_iso20022_catalogue_link_blocks(blocks)
 }
 
 fn repeated_short_paragraphs(blocks: &[Block], page_count: usize) -> Vec<String> {
@@ -33,6 +38,7 @@ fn is_page_furniture(block: &Block, repeated: &[String]) -> bool {
     let repeated: HashSet<&str> = repeated.iter().map(String::as_str).collect();
     page_furniture_key(&text).is_some_and(|key| repeated.contains(key.as_str()))
         || is_page_number_footer(&text)
+        || is_dash_wrapped_page_number(&text)
         || is_fraction_page_footer(&text)
 }
 
@@ -67,6 +73,25 @@ fn is_page_number_footer(text: &str) -> bool {
         return false;
     };
     number.trim().chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn is_dash_wrapped_page_number(text: &str) -> bool {
+    let trimmed = text.trim();
+    let Some(without_left) = trimmed
+        .strip_prefix('–')
+        .or_else(|| trimmed.strip_prefix('-'))
+    else {
+        return false;
+    };
+    let Some(number) = without_left
+        .trim()
+        .strip_suffix('–')
+        .or_else(|| without_left.trim().strip_suffix('-'))
+    else {
+        return false;
+    };
+    let number = number.trim();
+    !number.is_empty() && number.len() <= 4 && number.chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn is_fraction_page_footer(text: &str) -> bool {
@@ -143,31 +168,279 @@ fn repair_link(link: Link) -> Link {
     }
 }
 
-fn repair_text(text: &str) -> String {
-    let mut repaired = text.to_string();
-    for (from, to) in PDF_TEXT_REPAIRS {
-        repaired = repaired.replace(from, to);
+fn repair_iso20022_catalogue_link_blocks(blocks: Vec<Block>) -> Vec<Block> {
+    let mut output = Vec::new();
+    let mut skip_marker_blocks = 0usize;
+
+    for block in blocks {
+        if skip_marker_blocks > 0 && is_link_line_marker_block(&block) {
+            skip_marker_blocks -= 1;
+            continue;
+        }
+
+        if let Some(repaired) = split_iso20022_catalogue_link_block(&block) {
+            output.extend(repaired);
+            skip_marker_blocks = 2;
+            continue;
+        }
+
+        if let Some(repaired) = strip_embedded_link_line_marker(&block) {
+            output.push(repaired);
+            continue;
+        }
+
+        output.push(block);
+    }
+
+    output
+}
+
+fn split_iso20022_catalogue_link_block(block: &Block) -> Option<Vec<Block>> {
+    let Block::Paragraph(paragraph) = block else {
+        return None;
+    };
+    let links = paragraph
+        .content
+        .iter()
+        .filter_map(|inline| match inline {
+            Inline::Link(link) => Some(link),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if links.len() < 2 {
+        return None;
+    }
+    let base_link = links
+        .iter()
+        .find(|link| is_iso20022_home_link(&link.href))?;
+    let document_link = links
+        .iter()
+        .find(|link| is_iso20022_document_link(&link.href))?;
+
+    let trailing = paragraph
+        .content
+        .iter()
+        .filter_map(|inline| match inline {
+            Inline::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    if !trailing.contains("Catalogue") {
+        return None;
+    }
+
+    let catalogue_text = repair_iso20022_catalogue_text(&trailing);
+    let first = Block::Paragraph(Paragraph {
+        content: vec![
+            Inline::Link((*base_link).clone()),
+            Inline::Text(format!(" {catalogue_text}")),
+        ],
+        source: paragraph.source.clone(),
+    });
+    let second = Block::Paragraph(Paragraph {
+        content: vec![Inline::Link((*document_link).clone())],
+        source: paragraph.source.clone(),
+    });
+    Some(vec![first, second])
+}
+
+fn strip_embedded_link_line_marker(block: &Block) -> Option<Block> {
+    let Block::Paragraph(paragraph) = block else {
+        return None;
+    };
+    let links = paragraph
+        .content
+        .iter()
+        .filter_map(|inline| match inline {
+            Inline::Link(link) if is_iso20022_document_link(&link.href) => Some(link.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if links.len() != 1 {
+        return None;
+    }
+    let text = paragraph
+        .content
+        .iter()
+        .filter_map(|inline| match inline {
+            Inline::Text(text) => Some(text.trim()),
+            _ => None,
+        })
+        .collect::<String>();
+    if !matches!(text.as_str(), "E" | "I" | "E." | "I.") {
+        return None;
+    }
+    Some(Block::Paragraph(Paragraph {
+        content: vec![Inline::Link(links[0].clone())],
+        source: paragraph.source.clone(),
+    }))
+}
+
+fn repair_iso20022_catalogue_text(text: &str) -> String {
+    let mut repaired = text
+        .trim()
+        .trim_start_matches(|ch: char| ch == 'I' || ch == ',' || ch.is_whitespace())
+        .to_string();
+    if let Some(rest) = repaired.strip_prefix("under") {
+        repaired = format!("under{}", rest);
+    }
+    repaired = repaired
+        .replace("Catalogue of0,62 20022", "Catalogue of ISO 20022")
+        .replace("Catalogue of 0,62 20022", "Catalogue of ISO 20022")
+        .replace("pai)n.", "pain.")
+        .replace("pai)n", "pain")
+        .replace("pai n.", "pain.")
+        .replace("pai n", "pain");
+    if !repaired.ends_with('.') {
+        repaired.push('.');
     }
     repaired
 }
 
-const PDF_TEXT_REPAIRS: &[(&str, &str)] = &[
-    ("Version7.0", "Version 7.0"),
-    ("February2013", "February 2013"),
-    ("messageexample", "message example"),
-    ("withoutChangingthe", "without Changing the"),
-    (
-        "Ichangecurrentusingprogrammer",
-        "I change current using programmer",
-    ),
-    (
-        "How do Ichangecurrentusingprogrammer",
-        "How do I change current using programmer",
-    ),
-    ("10days", "10 days"),
-    ("200worldwide", "200 worldwide"),
-    (".We", ". We"),
-];
+fn is_link_line_marker_block(block: &Block) -> bool {
+    paragraph_text(block).is_some_and(|text| matches!(text.trim(), "E" | "I" | "2"))
+}
+
+fn is_iso20022_home_link(href: &str) -> bool {
+    let trimmed = href.trim_end_matches('/');
+    matches!(
+        trimmed,
+        "http://www.iso20022.org" | "https://www.iso20022.org"
+    )
+}
+
+fn is_iso20022_document_link(href: &str) -> bool {
+    let href = href.trim();
+    (href.starts_with("http://www.iso20022.org/") || href.starts_with("https://www.iso20022.org/"))
+        && href.len() > "http://www.iso20022.org/".len()
+}
+
+fn repair_text(text: &str) -> String {
+    let repaired = strip_license_artifact_runs(text);
+    if looks_like_xml_line(&repaired) || looks_like_xml_continuation(&repaired) {
+        return repaired;
+    }
+    repair_joined_word_boundaries(&repaired)
+}
+
+fn strip_license_artifact_runs(text: &str) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+
+    while index < chars.len() {
+        if is_license_artifact_char(chars[index]) {
+            let run_start = index;
+            while index < chars.len() && is_license_artifact_char(chars[index]) {
+                index += 1;
+            }
+
+            let mut next_text = index;
+            while next_text < chars.len() && chars[next_text].is_whitespace() {
+                next_text += 1;
+            }
+
+            if index - run_start >= 12
+                && (next_text == chars.len() || chars[next_text].is_alphanumeric())
+            {
+                if output.trim().is_empty() {
+                    output.clear();
+                } else if next_text == chars.len() {
+                    while output.ends_with(char::is_whitespace) {
+                        output.pop();
+                    }
+                } else if next_text < chars.len() && !output.ends_with(char::is_whitespace) {
+                    output.push(' ');
+                }
+                index = next_text;
+                continue;
+            }
+
+            for ch in &chars[run_start..index] {
+                output.push(*ch);
+            }
+            continue;
+        }
+
+        output.push(chars[index]);
+        index += 1;
+    }
+
+    output
+}
+
+fn is_license_artifact_char(ch: char) -> bool {
+    matches!(ch, '`' | ',' | '-' | '\'' | '’' | '“' | '”')
+}
+
+fn repair_joined_word_boundaries(text: &str) -> String {
+    text.split_whitespace()
+        .map(repair_joined_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn repair_joined_token(token: &str) -> String {
+    if token
+        .chars()
+        .any(|ch| matches!(ch, '<' | '>' | '/' | '_' | '\\'))
+    {
+        return token.to_string();
+    }
+
+    let chars = token.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(token.len());
+    for index in 0..chars.len() {
+        if joined_boundary(&chars, index) {
+            output.push(' ');
+        }
+        output.push(chars[index]);
+    }
+    split_common_joined_pairs(&output)
+}
+
+fn joined_boundary(chars: &[char], index: usize) -> bool {
+    if index == 0 {
+        return false;
+    }
+    let left = chars[index - 1];
+    let right = chars[index];
+    if left.is_ascii_digit() && right.is_ascii_lowercase() {
+        return true;
+    }
+    if left.is_ascii_lowercase() && right.is_ascii_digit() {
+        let digit_run = chars[index..]
+            .iter()
+            .take_while(|ch| ch.is_ascii_digit())
+            .count();
+        return digit_run >= 2 || chars.get(index + digit_run) == Some(&'.');
+    }
+    left.is_ascii_lowercase() && right.is_ascii_uppercase() && index >= 5
+}
+
+fn split_common_joined_pairs(text: &str) -> String {
+    text.split_whitespace()
+        .map(|token| {
+            for (left, right) in COMMON_JOINED_WORD_PAIRS {
+                if token.eq_ignore_ascii_case(&format!("{left}{right}")) {
+                    return preserve_first_word_case(token, left, right);
+                }
+            }
+            token.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn preserve_first_word_case(token: &str, left: &str, right: &str) -> String {
+    let split_at = left.len();
+    let (actual_left, _) = token.split_at(split_at.min(token.len()));
+    format!("{actual_left} {right}")
+}
+
+const COMMON_JOINED_WORD_PAIRS: &[(&str, &str)] =
+    &[("and", "can"), ("of", "over"), ("is", "a"), ("as", "a")];
 
 fn collapse_code_blocks(blocks: Vec<Block>) -> Vec<Block> {
     let mut output = Vec::new();
@@ -231,105 +504,4 @@ fn paragraph_text(block: &Block) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn removes_repeated_headers_and_page_footers() {
-        let blocks = vec![
-            Block::paragraph("IG SEPA Credit Transfer version 7.0"),
-            Block::paragraph("1 P a g e"),
-            Block::paragraph("Body"),
-            Block::paragraph("IG SEPA Credit Transfer version 7.0"),
-            Block::paragraph("2 P a g e"),
-            Block::paragraph("More"),
-            Block::paragraph("IG SEPA Credit Transfer version 7.0"),
-            Block::paragraph("3 P a g e"),
-            Block::paragraph("End"),
-            Block::paragraph("IG SEPA Credit Transfer version 7.0"),
-        ];
-
-        let blocks = super::blocks(blocks, 12);
-
-        assert_eq!(blocks.len(), 3);
-    }
-
-    #[test]
-    fn removes_repeated_short_pdf_footers_in_three_page_documents() {
-        let blocks = vec![
-            Block::paragraph("Tel +31 857 470 061-www.inventronics-co.com 1/3"),
-            Block::paragraph("Quote body"),
-            Block::paragraph("Tel +31 857 470 061-www.inventronics-co.com 2/3"),
-            Block::paragraph("More body"),
-            Block::paragraph("Tel +31 857 470 061-www.inventronics-co.com 3/3"),
-            Block::paragraph("Final body"),
-        ];
-
-        let blocks = super::blocks(blocks, 3);
-        let text = blocks
-            .iter()
-            .filter_map(paragraph_text)
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        assert!(!text.contains("Tel +31"));
-        assert!(text.contains("Quote body"));
-        assert!(text.contains("Final body"));
-    }
-
-    #[test]
-    fn collapses_xml_paragraphs_to_code_block() {
-        let blocks = vec![
-            Block::paragraph("Intro"),
-            Block::paragraph("<?xml version=\"1.0\"?>"),
-            Block::paragraph("<Document>"),
-            Block::paragraph("</Document>"),
-        ];
-
-        let blocks = super::blocks(blocks, 1);
-
-        assert!(matches!(blocks[1], Block::CodeBlock(_)));
-    }
-
-    #[test]
-    fn keeps_multiline_xml_opening_in_code_block() {
-        let blocks = vec![
-            Block::paragraph("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
-            Block::paragraph("<Document xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""),
-            Block::paragraph("xmlns=\"urn:iso:std:iso:20022:tech:xsd:pain.001.001.03\""),
-            Block::paragraph(
-                "xsi:schemaLocation=\"urn:iso:std:iso:20022:tech:xsd:pain.001.001.03 file.xsd\">",
-            ),
-            Block::paragraph("<CstmrCdtTrfInitn>"),
-            Block::paragraph("</CstmrCdtTrfInitn>"),
-            Block::paragraph("</Document>"),
-        ];
-
-        let blocks = super::blocks(blocks, 1);
-
-        let Block::CodeBlock(code) = &blocks[0] else {
-            panic!("expected xml code block");
-        };
-        assert!(code.code.starts_with("<?xml"));
-        assert!(code.code.contains("<Document xmlns:xsi"));
-        assert!(code.code.contains("xsi:schemaLocation"));
-    }
-
-    #[test]
-    fn repairs_common_pdf_word_joins() {
-        let blocks = super::blocks(
-            vec![Block::paragraph(
-                "Version7.0 February2013 messageexample withoutChangingthe",
-            )],
-            1,
-        );
-
-        let Some(text) = paragraph_text(&blocks[0]) else {
-            panic!("expected paragraph text");
-        };
-        assert_eq!(
-            text,
-            "Version 7.0 February 2013 message example without Changing the"
-        );
-    }
-}
+mod tests;

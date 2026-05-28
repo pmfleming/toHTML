@@ -38,8 +38,10 @@ function idleRenderJob() {
     scanned: 0,
     total: 0,
     completed: 0,
+    failed: 0,
     current: null,
     results: [],
+    errors: [],
     error: null,
     startedAt: null,
     finishedAt: null,
@@ -54,11 +56,11 @@ async function inputPdfs(inputDir) {
 
 async function runJob({ pdfs, initialJob, inputDir, outputDir, mainProjectRoot, setJob }) {
   let job = initialJob;
-  try {
-    for (const relativePath of pdfs) {
-      job = updateCurrent(job, relativePath);
-      setJob(job);
-      const outputPath = outputHtmlPath(outputDir, relativePath);
+  for (const relativePath of pdfs) {
+    job = updateCurrent(job, relativePath);
+    setJob(job);
+    const outputPath = outputHtmlPath(outputDir, relativePath);
+    try {
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
       await runToHtml({
         inputPath: path.join(inputDir, relativePath),
@@ -67,12 +69,12 @@ async function runJob({ pdfs, initialJob, inputDir, outputDir, mainProjectRoot, 
         mainProjectRoot,
       });
       job = completeFile(job, relativePath, outputDir, outputPath);
-      setJob(job);
+    } catch (error) {
+      job = failFile(job, relativePath, error);
     }
-    setJob(finishJob(job, "done"));
-  } catch (error) {
-    setJob(finishJob(job, "error", error));
+    setJob(job);
   }
+  setJob(finishJob(job, job.failed > 0 ? "error" : "done"));
 
   function updateCurrent(currentJob, relativePath) {
     return {
@@ -89,8 +91,10 @@ function createRunningJob(pdfs, includeImages) {
     scanned: pdfs.length,
     total: pdfs.length,
     completed: 0,
+    failed: 0,
     current: pdfs[0]?.replaceAll(path.sep, "/") ?? null,
     results: [],
+    errors: [],
     error: null,
     startedAt: new Date().toISOString(),
     finishedAt: pdfs.length === 0 ? new Date().toISOString() : null,
@@ -111,12 +115,29 @@ function completeFile(job, relativePath, outputDir, outputPath) {
   };
 }
 
+function failFile(job, relativePath, error) {
+  return {
+    ...job,
+    failed: job.failed + 1,
+    errors: [
+      ...job.errors,
+      {
+        input: relativePath.replaceAll(path.sep, "/"),
+        error: errorMessage(error),
+      },
+    ],
+  };
+}
+
 function finishJob(job, status, error = null) {
+  const failureSummary = job.failed > 0
+    ? `${job.failed} of ${job.total} conversions failed.`
+    : null;
   return {
     ...job,
     status,
     current: null,
-    error: error ? errorMessage(error) : null,
+    error: error ? errorMessage(error) : failureSummary,
     finishedAt: new Date().toISOString(),
   };
 }

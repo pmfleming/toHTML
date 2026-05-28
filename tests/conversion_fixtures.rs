@@ -189,6 +189,48 @@ fn pdf_fixture_decodes_multi_byte_to_unicode_cmap() {
 }
 
 #[test]
+fn pdf_fixture_decodes_to_unicode_when_font_dictionary_is_in_object_stream() {
+    let content = b"BT /C2_0 1 Tf 80.04 0 0 80.04 37 409 Tm <17A45C09> Tj ET";
+    let cmap = b"beginbfchar\n<17A4> <611F>\n<5C09> <8C22>\nendbfchar\n";
+    let font_object = b"<< /Type /Font /Subtype /Type0 /ToUnicode 6 0 R >>";
+    let mut object_stream = Vec::new();
+    object_stream.extend_from_slice(b"5 0 ");
+    object_stream.extend_from_slice(font_object);
+    let compressed_object_stream = flate_bytes(&object_stream);
+    let mut pdf = Vec::new();
+    write!(
+        pdf,
+        "%PDF-1.5\n\
+1 0 obj << /Type /Page /Contents 2 0 R /Resources << /Font << /C2_0 5 0 R >> >> >> endobj\n\
+2 0 obj << /Length {content_len} >>\nstream\n",
+        content_len = content.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(content);
+    write!(
+        pdf,
+        "\nendstream\nendobj\n\
+6 0 obj << /Length {cmap_len} >>\nstream\n",
+        cmap_len = cmap.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(cmap);
+    write!(
+        pdf,
+        "\nendstream\nendobj\n\
+7 0 obj << /Type /ObjStm /N 1 /First 4 /Length {object_stream_len} /Filter /FlateDecode >>\nstream\n",
+        object_stream_len = compressed_object_stream.len()
+    )
+    .unwrap();
+    pdf.extend_from_slice(&compressed_object_stream);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF");
+
+    let html = render_html(&pdf_to_document(&pdf).unwrap());
+
+    assert!(html.contains("感谢"), "html was: {html}");
+}
+
+#[test]
 fn pdf_fixture_warns_for_image_only_page() {
     let pdf = br#"%PDF-1.4
 1 0 obj << /Type /Page /Contents 2 0 R /Resources << /XObject << /Im0 3 0 R >> >> >> endobj

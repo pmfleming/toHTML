@@ -15,6 +15,19 @@ fn parses_bfchar_mappings() {
 }
 
 #[test]
+fn maps_wingdings_private_use_ballot_box_to_unicode_square() {
+    let cmap = CMap::parse(
+        br#"
+        beginbfchar
+        <0087> <F070>
+        endbfchar
+        "#,
+    );
+
+    assert_eq!(cmap.decode(&[0, 0x87]), "□");
+}
+
+#[test]
 fn parses_packed_bfchar_mappings_on_one_line() {
     let cmap = CMap::parse(
         br#"

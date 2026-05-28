@@ -43,7 +43,7 @@ app.get("/api/render-status", (_request, response) => {
 
 if (isProduction) {
   app.use(express.static(path.join(root, "dist")));
-  app.get("*", (_request, response) => {
+  app.get(/.*/, (_request, response) => {
     response.sendFile(path.join(root, "dist", "index.html"));
   });
 } else {

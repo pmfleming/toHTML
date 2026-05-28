@@ -57,6 +57,8 @@ impl InlineParser<'_> {
             src: target.href,
             alt: Some(alt),
             title: target.title,
+            width: None,
+            height: None,
             asset_id: None,
             source: None,
         }))

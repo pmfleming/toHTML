@@ -4,7 +4,6 @@ mod form;
 mod graphics;
 mod hex;
 mod images;
-mod inventronics;
 mod layout;
 #[cfg(test)]
 mod layout_tests;
@@ -12,6 +11,7 @@ mod links;
 mod metadata;
 mod object;
 mod postprocess;
+mod repair;
 mod streams;
 mod struct_tree;
 #[cfg(test)]
@@ -70,7 +70,14 @@ pub fn pdf_to_document_with_options(
     for (page_index, page) in extraction.pages.iter().enumerate() {
         let mut page_blocks = Vec::new();
         let mut page_segments = Vec::new();
+        let mut semantic_segments = Vec::new();
         let mut page_shapes = Vec::new();
+        let mut page_font_cmaps = font_cmaps.clone();
+        page_font_cmaps.extend(cmap::font_cmaps_for_resources(
+            bytes,
+            &objects,
+            &page.font_resources,
+        )?);
         let mut page_font_metrics = font_metrics.clone();
         page_font_metrics.extend(fonts::font_metrics_for_resources(
             bytes,
@@ -80,8 +87,9 @@ pub fn pdf_to_document_with_options(
             page_shapes.extend(graphics::extract_rectangles(stream));
         }
         let (form_shapes, form_paths) =
-            form::form_xobject_graphics(&objects, &page.image_resources);
+            form::form_xobject_graphics(&objects, &page.image_resources, &page.streams);
         page_shapes.extend(form_shapes);
+        repair::remove_redundant_header_hairlines(page.height.unwrap_or(842.0), &mut page_shapes);
         let page_images = if options.include_images {
             images::extract_page_images(
                 bytes,
@@ -97,7 +105,9 @@ pub fn pdf_to_document_with_options(
         let mut page_paths = page
             .streams
             .iter()
-            .flat_map(|stream| graphics::extract_paths(stream))
+            .flat_map(|stream| {
+                graphics::extract_paths_with_shading_fills(stream, &page.shading_resources)
+            })
             .chain(form_paths)
             .map(|path| visual::VisualPath {
                 commands: path.commands,
@@ -128,26 +138,38 @@ pub fn pdf_to_document_with_options(
         if !combined_stream.is_empty() {
             page_segments = text::extract_segments_with_fonts(
                 &combined_stream,
-                &font_cmaps,
+                &page_font_cmaps,
                 &page_font_metrics,
                 &struct_roles,
             );
             page_segments.extend(form::form_xobject_text_segments(
                 &objects,
                 &page.image_resources,
-                &font_cmaps,
+                &page.streams,
+                &page_font_cmaps,
                 &page_font_metrics,
                 &struct_roles,
             ));
-            inventronics::reconstruct_inventronics_quote_labels(
-                page.page_number,
+            text::repair_segment_text(&mut page_segments);
+            repair::restore_centered_page_number_markers(
+                page.width.unwrap_or(612.0),
                 page.height.unwrap_or(842.0),
                 &mut page_segments,
             );
-            inventronics::tighten_overlapping_text_widths(&mut page_segments);
-            let semantic_segments = text::non_artifact_segments(&page_segments);
+            repair::split_segments_at_column_gaps(page.width.unwrap_or(612.0), &mut page_segments);
+            repair::split_multicolumn_sublabels(page.height.unwrap_or(842.0), &mut page_segments);
+            repair::tighten_overlapping_text_widths(&mut page_segments);
+            semantic_segments = text::non_artifact_segments(&page_segments);
             page_blocks.extend(layout::blocks_from_segments(&semantic_segments));
         }
+        layout::add_content_images_to_blocks(
+            &mut page_blocks,
+            &semantic_segments,
+            &page_images,
+            page.width.unwrap_or(612.0),
+            page.height.unwrap_or(842.0),
+            page.page_number,
+        );
         if !page_segments.is_empty()
             || !page_shapes.is_empty()
             || !page_images.is_empty()
@@ -210,6 +232,7 @@ pub fn pdf_to_document_with_options(
     }
     add_image_text_warning(&mut document, bytes);
     links::apply_detected_links(&mut document.blocks, &mut document.warnings, bytes);
+    document.blocks = postprocess::link_artifacts(document.blocks);
     document.metadata.visual_html = visual::render_pages(&visual_pages);
 
     Ok(document)

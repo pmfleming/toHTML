@@ -3,6 +3,8 @@ mod paths;
 mod tests;
 mod tokens;
 
+use std::collections::HashMap;
+
 use paths::{
     dash_array, push_filled_path_rectangles, push_rectangles, push_stroked_path_lines,
     push_vector_path, Path,
@@ -37,11 +39,18 @@ pub(super) enum PathCommand {
 }
 
 pub(super) fn extract_rectangles(stream: &[u8]) -> Vec<RectShape> {
-    extract_graphics(stream).rectangles
+    extract_graphics(stream, &HashMap::new()).rectangles
 }
 
 pub(super) fn extract_paths(stream: &[u8]) -> Vec<VectorPath> {
-    extract_graphics(stream).paths
+    extract_graphics(stream, &HashMap::new()).paths
+}
+
+pub(super) fn extract_paths_with_shading_fills(
+    stream: &[u8],
+    shading_fills: &HashMap<String, String>,
+) -> Vec<VectorPath> {
+    extract_graphics(stream, shading_fills).paths
 }
 
 #[derive(Debug, Default)]
@@ -50,18 +59,21 @@ struct GraphicsExtraction {
     paths: Vec<VectorPath>,
 }
 
-fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
+fn extract_graphics(stream: &[u8], shading_fills: &HashMap<String, String>) -> GraphicsExtraction {
     let tokens = tokenize(stream);
     let mut state = GraphicsState::default();
     let mut stack = Vec::new();
     let mut operands = Vec::new();
+    let mut name_operands = Vec::new();
     let mut pending_rects = Vec::new();
     let mut path = Path::default();
     let mut shapes = Vec::new();
     let mut vector_paths = Vec::new();
+    let mut wide_shading_fill = None;
 
     for token in tokens {
         match token {
+            Token::Name(name) => name_operands.push(name),
             Token::Number(value) => operands.push(value),
             Token::NumberArray(values) => operands.extend(values),
             Token::Operator(operator) => {
@@ -124,6 +136,15 @@ fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
                                 .transform_rect(values[0], values[1], values[2], values[3]),
                         );
                     }
+                    "W" | "W*" => {
+                        if path.has_drawing_commands() {
+                            state.clip_path = Some(path.clone());
+                            state.clip_fill = state.fill.clone();
+                        } else if !pending_rects.is_empty() {
+                            state.clip_rects = pending_rects.clone();
+                            state.clip_fill = state.fill.clone();
+                        }
+                    }
                     "m" if operands.len() >= 2 => {
                         let values = last_operands::<2>(&operands);
                         path.move_to(state.ctm.transform_point(values[0], values[1]));
@@ -164,7 +185,7 @@ fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
                             &path,
                             state.fill.clone(),
                             None,
-                            state.line_width,
+                            state.transformed_line_width(),
                             None,
                         );
                         pending_rects.clear();
@@ -180,7 +201,7 @@ fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
                                 &mut shapes,
                                 &path,
                                 state.stroke.clone(),
-                                state.line_width,
+                                state.transformed_line_width(),
                             );
                         }
                         push_vector_path(
@@ -188,7 +209,7 @@ fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
                             &path,
                             None,
                             state.stroke.clone(),
-                            state.line_width,
+                            state.transformed_line_width(),
                             dash_array(&state),
                         );
                         pending_rects.clear();
@@ -210,7 +231,7 @@ fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
                                 &mut shapes,
                                 &path,
                                 state.stroke.clone(),
-                                state.line_width,
+                                state.transformed_line_width(),
                             );
                         }
                         push_vector_path(
@@ -218,11 +239,43 @@ fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
                             &path,
                             state.fill.clone(),
                             state.stroke.clone(),
-                            state.line_width,
+                            state.transformed_line_width(),
                             dash_array(&state),
                         );
                         pending_rects.clear();
                         path.clear();
+                    }
+                    "sh" => {
+                        let shading_fill = name_operands
+                            .last()
+                            .and_then(|name| shading_fills.get(name))
+                            .cloned();
+                        if let Some(clip_path) = &state.clip_path {
+                            let fill = shading_fill.or_else(|| {
+                                shading_fill_for_clip(
+                                    clip_path,
+                                    state.clip_fill.clone().or_else(|| state.fill.clone()),
+                                    &mut wide_shading_fill,
+                                )
+                            });
+                            push_vector_path(
+                                &mut vector_paths,
+                                clip_path,
+                                fill,
+                                None,
+                                state.transformed_line_width(),
+                                None,
+                            );
+                        } else if !state.clip_rects.is_empty() {
+                            push_rectangles(
+                                &mut shapes,
+                                &state.clip_rects,
+                                shading_fill
+                                    .or_else(|| state.clip_fill.clone())
+                                    .or_else(|| state.fill.clone()),
+                                None,
+                            );
+                        }
                     }
                     "n" => {
                         pending_rects.clear();
@@ -231,6 +284,7 @@ fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
                     _ => {}
                 }
                 operands.clear();
+                name_operands.clear();
             }
         }
     }
@@ -241,6 +295,30 @@ fn extract_graphics(stream: &[u8]) -> GraphicsExtraction {
     }
 }
 
+fn shading_fill_for_clip(
+    path: &Path,
+    fill: Option<String>,
+    wide_shading_fill: &mut Option<String>,
+) -> Option<String> {
+    if !is_wide_shading_clip(path) {
+        return fill;
+    }
+    if let Some(existing) = wide_shading_fill.clone() {
+        return Some(existing);
+    }
+    if let Some(fill) = fill.clone() {
+        *wide_shading_fill = Some(fill);
+    }
+    fill
+}
+
+fn is_wide_shading_clip(path: &Path) -> bool {
+    let Some((width, height)) = path.bounds() else {
+        return false;
+    };
+    width >= 100.0 && height >= 20.0 && width / height.max(1.0) >= 3.0
+}
+
 #[derive(Debug, Clone)]
 struct GraphicsState {
     ctm: Matrix,
@@ -248,6 +326,9 @@ struct GraphicsState {
     stroke: Option<String>,
     line_width: f32,
     dash_array: Vec<f32>,
+    clip_path: Option<Path>,
+    clip_rects: Vec<RectShape>,
+    clip_fill: Option<String>,
 }
 
 impl Default for GraphicsState {
@@ -258,7 +339,16 @@ impl Default for GraphicsState {
             stroke: Some("#000000".to_string()),
             line_width: 1.0,
             dash_array: Vec::new(),
+            clip_path: None,
+            clip_rects: Vec::new(),
+            clip_fill: None,
         }
+    }
+}
+
+impl GraphicsState {
+    fn transformed_line_width(&self) -> f32 {
+        self.line_width * self.ctm.scale_x().max(self.ctm.scale_y()).max(0.01)
     }
 }
 
@@ -300,6 +390,14 @@ impl Matrix {
             self.a * x + self.c * y + self.e,
             self.b * x + self.d * y + self.f,
         )
+    }
+
+    fn scale_x(self) -> f32 {
+        (self.a.powi(2) + self.b.powi(2)).sqrt().abs()
+    }
+
+    fn scale_y(self) -> f32 {
+        (self.c.powi(2) + self.d.powi(2)).sqrt().abs()
     }
 
     fn transform_rect(self, x: f32, y: f32, width: f32, height: f32) -> RectShape {

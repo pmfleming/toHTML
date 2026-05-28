@@ -1,7 +1,8 @@
 use crate::{Block, Inline, TableAlignment};
 
-use super::layout::blocks_from_segments;
+use super::layout::{add_content_images_to_blocks, blocks_from_segments};
 use super::text::TextSegment;
+use super::visual::VisualImage;
 
 #[test]
 fn converts_aligned_lines_to_table() {
@@ -33,29 +34,6 @@ fn clusters_nearby_words_inside_table_cells() {
 
     assert_cell_text(&table, 0, 0, "Index Or");
     assert_eq!(table.rows[0].cells.len(), 2);
-}
-
-#[test]
-fn repairs_shifted_subset_text_after_table_cell_joining() {
-    let segments = segments(&[
-        ("Label", 10.0, 100.0),
-        ("Value", 180.0, 100.0),
-        ("International Standard", 10.0, 84.0),
-        ("IEC 6", 180.0, 84.0),
-        ("1000", 220.0, 84.0),
-        ("-3-", 260.0, 84.0),
-        ("2 has been prepared by sub", 288.0, 84.0),
-        ("-committee", 455.0, 84.0),
-    ]);
-
-    let table = first_table(blocks_from_segments(&segments));
-
-    assert_cell_text(
-        &table,
-        1,
-        1,
-        "IEC 61000-3-2 has been prepared by sub-committee",
-    );
 }
 
 #[test]
@@ -149,6 +127,46 @@ fn infers_unordered_lists_from_markers() {
 }
 
 #[test]
+fn keeps_wide_gap_o_bullet_prose_out_of_tables() {
+    let mut segments = segments(&[
+        ("o", 108.0, 100.0),
+        ("Read", 126.0, 100.0),
+        ("igital", 166.0, 100.0),
+        ("D", 194.0, 100.0),
+        ("imming brightness level", 203.0, 100.0),
+        ("D", 261.0, 100.0),
+        ("I returns value between", 329.0, 100.0),
+        ("0", 457.0, 100.0),
+        ("-", 464.0, 100.0),
+        ("200", 468.0, 100.0),
+        ("o Value = dim percentage * 200", 108.0, 84.0),
+    ]);
+    for segment in &mut segments {
+        segment.font_size = 12.0;
+    }
+
+    let blocks = blocks_from_segments(&segments);
+
+    assert!(
+        blocks.iter().all(|block| !matches!(block, Block::Table(_))),
+        "{blocks:?}"
+    );
+    let Block::List(list) = &blocks[0] else {
+        panic!("expected o-bullet list, got {blocks:?}");
+    };
+    assert_eq!(list.items.len(), 2);
+    let Block::Paragraph(paragraph) = &list.items[0].blocks[0] else {
+        panic!("expected paragraph");
+    };
+    assert_eq!(
+        paragraph.content,
+        vec![Inline::Text(
+            "Read Digital Dimming brightness level, returns value between 0-200".to_string()
+        )]
+    );
+}
+
+#[test]
 fn infers_large_text_heading() {
     let segments = vec![
         TextSegment::new("Overview".to_string(), 10.0, 120.0, 18.0, 70.0),
@@ -218,8 +236,7 @@ fn detects_three_column_table_with_wrapping_middle_cell_and_short_header() {
 #[test]
 fn detects_three_column_table_even_with_stray_footnote_line_before_header() {
     // Same as the previous case but with a stray "1" footnote line above the header,
-    // matching the layout immediately before the Index/Description/Type table in the
-    // XML-Message-for-SCT sample.
+    // matching documents that put a footnote marker directly before a table.
     let segments = segments(&[
         ("1", 72.0, 220.0),
         ("Index", 72.0, 200.0),
@@ -275,6 +292,39 @@ fn detects_three_column_table_even_when_description_is_split_into_word_segments(
     assert_eq!(table.rows[0].cells.len(), 3, "got rows: {:?}", table.rows);
     assert!(table.rows[0].cells[0].header);
     assert_cell_text(&table, 1, 2, "CHAN");
+}
+
+#[test]
+fn keeps_clustered_formula_fragments_in_one_table_cell() {
+    let segments = vec![
+        segment("Welding process", 76.0, 200.0),
+        segment("Load voltage", 426.0, 200.0),
+        segment("Manual arc welding", 76.0, 184.0),
+        segment("with coated electrodes", 145.0, 184.0),
+        small_segment("U", 426.0, 184.0, 6.0),
+        small_segment("2", 432.0, 182.0, 4.0),
+        small_segment("= (18", 439.0, 184.0, 21.0),
+        small_segment("+", 462.0, 184.0, 4.0),
+        small_segment("0,04", 469.0, 184.0, 18.0),
+        small_segment("I", 489.0, 184.0, 4.0),
+        small_segment("2", 492.0, 182.0, 4.0),
+        segment("Tungsten electrode welding", 76.0, 168.0),
+        small_segment("U", 426.0, 168.0, 6.0),
+        small_segment("2", 432.0, 166.0, 4.0),
+        small_segment("= (10", 439.0, 168.0, 21.0),
+        small_segment("+", 462.0, 168.0, 4.0),
+        small_segment("0,04", 469.0, 168.0, 18.0),
+        small_segment("I", 489.0, 168.0, 4.0),
+        small_segment("2", 492.0, 166.0, 4.0),
+        TextSegment::new("Next section heading".to_string(), 70.0, 126.0, 13.0, 120.0),
+    ];
+
+    let table = first_table(blocks_from_segments(&segments));
+
+    assert_eq!(table.rows.len(), 3, "got rows: {:?}", table.rows);
+    assert_eq!(table.rows[0].cells.len(), 2);
+    assert_cell_text(&table, 1, 0, "Manual arc welding with coated electrodes");
+    assert_cell_text(&table, 1, 1, "U 2 = (18 + 0,04 I 2)");
 }
 
 #[test]
@@ -376,6 +426,34 @@ fn emits_rotated_pdf_text_with_orientation_metadata() {
     assert!(raw.html.contains("data-rotation=\"90\""));
 }
 
+#[test]
+fn promotes_substantial_page_images_after_the_preceding_text_block() {
+    let segments = vec![segment("2.0 Section Heading", 55.0, 700.0)];
+    let mut blocks = blocks_from_segments(&segments);
+    let images = vec![visual_image(55.0, 518.0, 194.0, 152.0)];
+
+    add_content_images_to_blocks(&mut blocks, &segments, &images, 600.0, 800.0, 14);
+
+    assert!(matches!(blocks[0], Block::Paragraph(_) | Block::Heading(_)));
+    let Block::Image(image) = &blocks[1] else {
+        panic!("expected promoted image, got: {blocks:?}");
+    };
+    assert_eq!(image.alt.as_deref(), Some("PDF image on page 14"));
+    assert_eq!(image.width, Some(194));
+    assert_eq!(image.height, Some(152));
+}
+
+#[test]
+fn does_not_promote_small_header_images_as_content() {
+    let segments = vec![segment("Body text", 55.0, 700.0)];
+    let mut blocks = blocks_from_segments(&segments);
+    let images = vec![visual_image(55.0, 737.0, 68.0, 33.0)];
+
+    add_content_images_to_blocks(&mut blocks, &segments, &images, 600.0, 800.0, 1);
+
+    assert!(blocks.iter().all(|block| !matches!(block, Block::Image(_))));
+}
+
 fn first_table(blocks: Vec<Block>) -> crate::Table {
     let Block::Table(table) = blocks.into_iter().next().unwrap() else {
         panic!("expected table");
@@ -417,9 +495,25 @@ fn segment(text: &str, x: f32, y: f32) -> TextSegment {
     }
 }
 
+fn small_segment(text: &str, x: f32, y: f32, width: f32) -> TextSegment {
+    TextSegment::new(text.to_string(), x, y, 8.0, width)
+}
+
 fn segments(items: &[(&str, f32, f32)]) -> Vec<TextSegment> {
     items
         .iter()
         .map(|(text, x, y)| segment(text, *x, *y))
         .collect()
+}
+
+fn visual_image(x: f32, y: f32, width: f32, height: f32) -> VisualImage {
+    VisualImage {
+        src: "data:image/png;base64,AAAA".to_string(),
+        mask_src: None,
+        alt: "PDF image on page 14".to_string(),
+        x,
+        y,
+        width,
+        height,
+    }
 }

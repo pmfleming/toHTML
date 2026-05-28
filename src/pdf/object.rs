@@ -1,4 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
+
+use flate2::read::ZlibDecoder;
 
 mod lexer;
 
@@ -55,6 +58,8 @@ impl PdfObjects {
             cursor = end + b"endobj".len();
         }
 
+        objects.expand_object_streams();
+
         objects
     }
 
@@ -82,6 +87,51 @@ impl PdfObjects {
         self.order.retain(|existing| *existing != reference);
         self.order.push(reference);
         self.objects.insert(reference, object);
+    }
+
+    fn expand_object_streams(&mut self) {
+        let streams = self
+            .order
+            .iter()
+            .filter_map(|reference| self.objects.get(reference))
+            .filter(|object| object.type_name() == Some("ObjStm"))
+            .filter_map(|object| {
+                let dictionary = object.dictionary()?;
+                let stream = object.stream.as_ref()?;
+                Some((
+                    object.reference,
+                    dictionary.integer("N")?,
+                    dictionary.integer("First")?,
+                    stream_filters(dictionary),
+                    stream.clone(),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        for (reference, count, first, filters, stream) in streams {
+            let Some(decoded) = decode_object_stream(&filters, &stream) else {
+                continue;
+            };
+            let Some(objects) = parse_object_stream_objects(&decoded, count, first) else {
+                continue;
+            };
+            for (object_number, body) in objects {
+                if let Some(value) = Parser::new(body).parse_value() {
+                    self.insert(PdfObject {
+                        reference: PdfReference {
+                            object: object_number,
+                            generation: 0,
+                        },
+                        value,
+                        stream: None,
+                    });
+                }
+            }
+
+            if let Some(object) = self.objects.get_mut(&reference) {
+                object.stream = Some(decoded);
+            }
+        }
     }
 }
 
@@ -225,6 +275,77 @@ fn trim_stream_suffix(data: &[u8]) -> &[u8] {
         .unwrap_or(data)
 }
 
+fn stream_filters(dictionary: &PdfDictionary) -> Vec<String> {
+    match dictionary.get("Filter") {
+        Some(PdfValue::Name(name)) => vec![name.clone()],
+        Some(PdfValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                PdfValue::Name(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn decode_object_stream(filters: &[String], data: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = data.to_vec();
+    for filter in filters {
+        decoded = match filter.as_str() {
+            "FlateDecode" | "Fl" => {
+                let mut decoder = ZlibDecoder::new(decoded.as_slice());
+                let mut output = Vec::new();
+                decoder.read_to_end(&mut output).ok()?;
+                output
+            }
+            _ => return None,
+        };
+    }
+    Some(decoded)
+}
+
+fn parse_object_stream_objects(
+    decoded: &[u8],
+    count: i64,
+    first: i64,
+) -> Option<Vec<(u32, &[u8])>> {
+    let count = usize::try_from(count).ok()?;
+    let first = usize::try_from(first).ok()?;
+    if first > decoded.len() {
+        return None;
+    }
+
+    let header = std::str::from_utf8(&decoded[..first]).ok()?;
+    let numbers = header
+        .split_whitespace()
+        .filter_map(|token| token.parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    if numbers.len() < count * 2 {
+        return None;
+    }
+
+    let entries = numbers
+        .chunks_exact(2)
+        .take(count)
+        .filter_map(|pair| Some((u32::try_from(pair[0]).ok()?, pair[1])))
+        .collect::<Vec<_>>();
+
+    let mut objects = Vec::new();
+    for (index, (object, offset)) in entries.iter().enumerate() {
+        let start = first.checked_add(*offset)?;
+        let end = entries
+            .get(index + 1)
+            .map(|(_, next_offset)| first + *next_offset)
+            .unwrap_or(decoded.len());
+        if start >= end || end > decoded.len() {
+            continue;
+        }
+        objects.push((*object, &decoded[start..end]));
+    }
+    Some(objects)
+}
+
 struct Parser<'a> {
     lexer: Lexer<'a>,
     peeked: Vec<Token>,
@@ -328,6 +449,8 @@ fn find_token(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{write::ZlibEncoder, Compression};
+    use std::io::Write;
 
     #[test]
     fn parses_nested_strings_hex_names_and_references() {
@@ -372,5 +495,42 @@ endobj
                 .name("Name"),
             Some("New")
         );
+    }
+
+    #[test]
+    fn expands_flate_decoded_object_stream_entries() {
+        let first_body = b"<< /Name /FromStream >>";
+        let second_body = b"[1 2 3]";
+        let header = format!("8 0 9 {} ", first_body.len());
+        let mut body = header.into_bytes();
+        body.extend_from_slice(first_body);
+        body.extend_from_slice(second_body);
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&body).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let first = body.len() - first_body.len() - second_body.len();
+        let mut pdf =
+            format!("7 0 obj << /Type /ObjStm /N 2 /First {first} /Filter /FlateDecode /Length ")
+                .into_bytes();
+        pdf.extend_from_slice(compressed.len().to_string().as_bytes());
+        pdf.extend_from_slice(b" >>\nstream\n");
+        pdf.extend_from_slice(&compressed);
+        pdf.extend_from_slice(b"\nendstream\nendobj");
+
+        let objects = PdfObjects::parse(&pdf);
+
+        assert_eq!(
+            objects
+                .latest(8)
+                .unwrap()
+                .dictionary()
+                .unwrap()
+                .name("Name"),
+            Some("FromStream")
+        );
+        assert!(matches!(
+            objects.latest(9).unwrap().value,
+            PdfValue::Array(_)
+        ));
     }
 }

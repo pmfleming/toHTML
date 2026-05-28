@@ -45,9 +45,11 @@ export async function waitForRenderJob(
 
 export function renderJobMessage(job: RenderJob) {
   const mode = job.includeImages ? "images on" : "images off";
+  const failed = job.failed ?? 0;
+  const processed = job.completed + failed;
   if (job.status === "running") {
     const active = job.current ? `: ${job.current}` : "";
-    const current = job.total > 0 ? Math.min(job.completed + 1, job.total) : 0;
+    const current = job.total > 0 ? Math.min(processed + 1, job.total) : 0;
     return `Generating ${current} of ${job.total} (${mode})${active}`;
   }
   if (job.status === "done") {
@@ -57,7 +59,7 @@ export function renderJobMessage(job: RenderJob) {
     return `Generated ${job.completed} PDF ${job.completed === 1 ? "output" : "outputs"} with ${mode}.`;
   }
   if (job.status === "error") {
-    return `Render failed after ${job.completed} of ${job.total}: ${job.error ?? "unknown error"}`;
+    return `Generated ${job.completed} of ${job.total}; ${failed} failed: ${job.error ?? "unknown error"}`;
   }
   return `Ready to render with ${mode}.`;
 }

@@ -4,7 +4,14 @@ import { fetchLibrary, renderJobMessage, startRenderOutput, waitForRenderJob } f
 import { FolderHints, Navigator, PairStrip, StatusBar } from "./components/Layout";
 import { Pane } from "./components/Pane";
 import { RenderProgress } from "./components/RenderProgress";
-import { pairFiles, pruneCounts, resolvePairPage, totalPages, totalPairPages } from "./pairing";
+import {
+  fileCoverage,
+  pairFiles,
+  pruneCounts,
+  resolvePairPage,
+  totalPages,
+  totalPairPages,
+} from "./pairing";
 import type { LibraryResponse, PageCounts, RefreshOptions, RenderJob, Side } from "./types";
 
 export function App() {
@@ -12,7 +19,7 @@ export function App() {
   const [pageCounts, setPageCounts] = useState<PageCounts>({ input: {}, output: {} });
   const [globalPage, setGlobalPage] = useState(1);
   const [zoom, setZoom] = useState(0.7);
-  const [includeImages, setIncludeImages] = useState(false);
+  const [includeImages, setIncludeImages] = useState(true);
   const [isRendering, setIsRendering] = useState(false);
   const [renderMessage, setRenderMessage] = useState<string | null>(null);
   const [renderJob, setRenderJob] = useState<RenderJob | null>(null);
@@ -43,11 +50,13 @@ export function App() {
       setRenderMessage(renderJobMessage(started));
       if (started.status === "running") {
         const finished = await trackRenderJob(started, setRenderJob, setRenderMessage, refreshLibrary);
+        await refreshLibrary({ resetPage: false });
         if (finished.status === "error") {
           throw new Error(finished.error ?? "Render failed");
         }
+      } else {
+        await refreshLibrary({ resetPage: false });
       }
-      await refreshLibrary({ resetPage: false });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -71,6 +80,8 @@ export function App() {
     () => pairFiles(library?.input ?? [], library?.output ?? []),
     [library],
   );
+
+  const coverage = useMemo(() => fileCoverage(filePairs), [filePairs]);
 
   const totals = useMemo(() => {
     if (!library) {
@@ -109,15 +120,17 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
+        <div className="app-title">
           <h1>Interactive Compare</h1>
           <p>
             Matched files from <code>input</code> and <code>output</code>, paged together by
             filename.
           </p>
         </div>
+        <StatusBar currentPage={currentPage} totals={totals} coverage={coverage} />
         <div className="actions">
           <button
+            className="action-primary"
             type="button"
             disabled={isRendering}
             onClick={() => void generateOutput()}
@@ -136,7 +149,7 @@ export function App() {
             <Images size={17} />
             Include images
           </label>
-          <button type="button" onClick={() => void refreshLibrary()} title="Refresh folder scan">
+          <button className="action-secondary" type="button" onClick={() => void refreshLibrary()} title="Refresh folder scan">
             <FolderSync size={18} />
             Refresh
           </button>
@@ -153,21 +166,21 @@ export function App() {
             <span>{Math.round(zoom * 100)}%</span>
           </label>
         </div>
-      </header>
 
-      <StatusBar currentPage={currentPage} totals={totals} />
-      <Navigator
-        canMove={canMove}
-        currentPage={currentPage}
-        totalPages={totals.combined}
-        onPageChange={setGlobalPage}
-      />
-      <PairStrip pairPage={pairPage} pairIndex={filePairs.findIndex((pair) => pair.id === pairPage.pair?.id)} totalPairs={filePairs.length} />
+        <section className="compare-toolbar" aria-label="Compare controls">
+          <Navigator
+            canMove={canMove}
+            currentPage={currentPage}
+            totalPages={totals.combined}
+            onPageChange={setGlobalPage}
+          />
+          <PairStrip pairPage={pairPage} pairIndex={filePairs.findIndex((pair) => pair.id === pairPage.pair?.id)} totalPairs={filePairs.length} />
+          <FolderHints library={library} />
+        </section>
+      </header>
 
       {error ? <div className="error">{error}</div> : null}
       {renderMessage && !error ? <RenderProgress message={renderMessage} job={renderJob} /> : null}
-
-      <FolderHints library={library} />
 
       <section className="compare-grid">
         <Pane
@@ -199,12 +212,13 @@ async function trackRenderJob(
   setRenderMessage: (message: string) => void,
   refreshLibrary: (options?: RefreshOptions) => Promise<void>,
 ) {
-  let lastCompleted = started.completed;
+  let lastProcessed = started.completed + (started.failed ?? 0);
   return waitForRenderJob(async (job) => {
     setRenderJob(job);
     setRenderMessage(renderJobMessage(job));
-    if (job.completed !== lastCompleted) {
-      lastCompleted = job.completed;
+    const processed = job.completed + (job.failed ?? 0);
+    if (processed !== lastProcessed) {
+      lastProcessed = processed;
       await refreshLibrary({ resetPage: false });
     }
   });

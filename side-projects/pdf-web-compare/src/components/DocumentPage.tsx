@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as pdfjs from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import { fallbackHtmlLayout, fallbackHtmlPageSlice, measureHtmlLayout } from "../htmlLayout";
@@ -49,27 +49,39 @@ function PdfPage({
 }) {
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const [message, setMessage] = useState("Loading PDF...");
+  const hasRendered = useRef(false);
 
   useEffect(() => {
     if (!canvas) {
       return;
     }
     let cancelled = false;
-    setMessage("Loading PDF...");
+    if (!hasRendered.current) {
+      setMessage("Loading PDF...");
+    }
     const task = pdfjs.getDocument(file.url);
     task.promise
       .then(async (pdf) => {
         onPageCount(pdf.numPages);
         const page = await pdf.getPage(clamp(pageNumber, 1, pdf.numPages));
         const viewport = page.getViewport({ scale: zoom * 1.45 });
-        const context = canvas.getContext("2d");
-        if (!context || cancelled) {
+        const nextCanvas = document.createElement("canvas");
+        const nextContext = nextCanvas.getContext("2d");
+        if (!nextContext || cancelled) {
           return;
         }
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-        await page.render({ canvas, canvasContext: context, viewport }).promise;
+        nextCanvas.width = Math.floor(viewport.width);
+        nextCanvas.height = Math.floor(viewport.height);
+        await page.render({ canvas: nextCanvas, canvasContext: nextContext, viewport }).promise;
         if (!cancelled) {
+          const context = canvas.getContext("2d");
+          if (!context) {
+            return;
+          }
+          canvas.width = nextCanvas.width;
+          canvas.height = nextCanvas.height;
+          context.drawImage(nextCanvas, 0, 0);
+          hasRendered.current = true;
           setMessage("");
         }
       })
@@ -108,6 +120,8 @@ function HtmlPage({
   const page = layout.pages[currentPageIndex] ?? fallbackHtmlPageSlice(0, 1);
   const scaledWidth = Math.round(page.width * zoom);
   const scaledHeight = Math.round(page.height * zoom);
+  const frameWidth = Math.max(page.documentWidth, page.offsetX + page.width);
+  const frameHeight = Math.max(page.documentHeight, page.offsetY + page.height);
 
   useEffect(() => {
     setLayout(fallbackHtmlLayout(1));
@@ -142,8 +156,8 @@ function HtmlPage({
         onLoad={handleLoad}
         scrolling="no"
         style={{
-          width: page.documentWidth,
-          height: page.documentHeight,
+          width: frameWidth,
+          height: frameHeight,
           transform: `scale(${zoom}) translate(${-page.offsetX}px, ${-page.offsetY}px)`,
           transformOrigin: "top left",
         }}

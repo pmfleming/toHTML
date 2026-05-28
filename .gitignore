@@ -1,4 +1,5 @@
-/target/
+target/
+target-codex-check/
 /output/
 /input/
 /standard/

@@ -40,6 +40,64 @@ endobj
 }
 
 #[test]
+fn uses_page_local_cmaps_for_reused_font_resource_names() {
+    let pdf = br#"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 10 0 R >> >> /Contents 4 0 R >> endobj
+4 0 obj << /Length 37 >>
+stream
+BT /F1 12 Tf 72 720 Td <41> Tj ET
+endstream
+endobj
+5 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 20 0 R >> >> /Contents 6 0 R >> endobj
+6 0 obj << /Length 37 >>
+stream
+BT /F1 12 Tf 72 720 Td <41> Tj ET
+endstream
+endobj
+10 0 obj << /Type /Font /Subtype /Type0 /ToUnicode 11 0 R >> endobj
+11 0 obj << /Length 220 >>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <41> <0050006100670065004F006E0065> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+20 0 obj << /Type /Font /Subtype /Type0 /ToUnicode 21 0 R >> endobj
+21 0 obj << /Length 220 >>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <41> <005000610067006500540077006F> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+%%EOF"#;
+
+    let document = pdf_to_document(pdf).unwrap();
+    let html = crate::render_html(&document);
+
+    assert!(html.contains("PageOne"));
+    assert!(html.contains("PageTwo"));
+}
+
+#[test]
+fn decodes_simple_font_encoding_differences_without_to_unicode() {
+    let pdf = br#"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj
+4 0 obj << /Length 37 >>
+stream
+BT /F1 12 Tf 72 720 Td <41424320> Tj ET
+endstream
+endobj
+5 0 obj << /Type /Font /Subtype /Type1 /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /T 66 /h 67 /e] >> >> endobj
+%%EOF"#;
+
+    let document = pdf_to_document(pdf).unwrap();
+    let html = crate::render_html(&document);
+
+    assert!(html.contains("The"));
+}
+
+#[test]
 fn creates_placeholder_for_non_extractable_pdf() {
     let pdf = br#"%PDF-1.4
 1 0 obj << /Type /Page >> endobj
@@ -228,19 +286,16 @@ fn extracts_document_title_from_info_dictionary() {
 
 #[test]
 fn removes_office_prefix_from_document_title() {
-    let pdf = pdf_with_info_object("<< /Title (Microsoft Word - Quotation for INDO Lighting) >>");
+    let pdf = pdf_with_info_object("<< /Title (Microsoft Word - Project Proposal) >>");
 
     let document = pdf_to_document(pdf.as_bytes()).unwrap();
 
-    assert_eq!(
-        document.metadata.title.as_deref(),
-        Some("Quotation for INDO Lighting")
-    );
+    assert_eq!(document.metadata.title.as_deref(), Some("Project Proposal"));
 }
 
 #[test]
 fn rejects_generated_filename_document_title() {
-    let pdf = pdf_with_info_object("<< /Title (IAF210906-1.xlsx) >>");
+    let pdf = pdf_with_info_object("<< /Title (ExampleWorkbook.xlsx) >>");
 
     let document = pdf_to_document(pdf.as_bytes()).unwrap();
 
@@ -324,19 +379,6 @@ endobj
 }
 
 #[test]
-fn tightens_visual_text_widths_before_adjacent_fragments() {
-    let mut segments = vec![
-        text::TextSegment::new("manufacture".to_string(), 314.0, 600.0, 11.0, 54.0),
-        text::TextSegment::new("of LED".to_string(), 348.0, 600.0, 11.0, 40.0),
-    ];
-
-    tighten_overlapping_text_widths(&mut segments);
-
-    assert!(segments[0].width < 40.0);
-    assert!(segments[0].width >= 29.0);
-}
-
-#[test]
 fn reports_encryption_as_extraction_risk() {
     let pdf = br#"%PDF-1.4
 trailer << /Encrypt 4 0 R >>
@@ -392,4 +434,3 @@ endstream
 endobj
 %%EOF"#
 }
-use super::inventronics::tighten_overlapping_text_widths;
