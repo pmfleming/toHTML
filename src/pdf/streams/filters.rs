@@ -1,32 +1,39 @@
-use std::io::Read;
-
-use flate2::read::ZlibDecoder;
+mod basic;
+mod lzw;
+mod predictor;
 
 use crate::ConvertError;
 
-use super::super::hex::decode_hex_bytes;
 use super::super::object::{PdfDictionary, PdfValue};
+use basic::decode_one_filter;
+use predictor::{apply_predictor, DecodeParams};
+
+#[cfg(test)]
+use lzw::lzw_decode;
+#[cfg(test)]
+use predictor::tiff_predictor;
 
 pub(super) fn decode_legacy_stream(header: &[u8], data: &[u8]) -> Result<Vec<u8>, ConvertError> {
     let filters = legacy_stream_filters(header);
     decode_filters(&filters, data)
 }
 
+pub(super) fn decode_stream(
+    dictionary: &PdfDictionary,
+    data: &[u8],
+) -> Result<Vec<u8>, ConvertError> {
+    let mut decoded = data.to_vec();
+    for filter in stream_filter_specs(dictionary) {
+        decoded = decode_one_filter(&filter.name, &decoded)?;
+        decoded = apply_predictor(&decoded, &filter.params)?;
+    }
+    Ok(decoded)
+}
+
 pub(super) fn decode_filters(filters: &[String], data: &[u8]) -> Result<Vec<u8>, ConvertError> {
     let mut decoded = data.to_vec();
     for filter in filters {
-        decoded = match filter.as_str() {
-            "FlateDecode" | "Fl" => flate_decode(&decoded)?,
-            "ASCIIHexDecode" | "AHx" => ascii_hex_decode(&decoded),
-            "ASCII85Decode" | "A85" => ascii85_decode(&decoded)?,
-            "RunLengthDecode" | "RL" => run_length_decode(&decoded),
-            "DCTDecode" | "JPXDecode" | "CCITTFaxDecode" | "JBIG2Decode" => decoded,
-            unsupported => {
-                return Err(ConvertError::Pdf(format!(
-                    "unsupported PDF stream filter {unsupported}"
-                )))
-            }
-        };
+        decoded = decode_one_filter(filter, &decoded)?;
     }
     Ok(decoded)
 }
@@ -43,13 +50,6 @@ pub(super) fn stream_filters(dictionary: &PdfDictionary) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
-}
-
-fn flate_decode(data: &[u8]) -> Result<Vec<u8>, ConvertError> {
-    let mut decoder = ZlibDecoder::new(data);
-    let mut decoded = Vec::new();
-    decoder.read_to_end(&mut decoded)?;
-    Ok(decoded)
 }
 
 fn legacy_stream_filters(header: &[u8]) -> Vec<String> {
@@ -72,82 +72,112 @@ fn legacy_stream_filters(header: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn ascii_hex_decode(data: &[u8]) -> Vec<u8> {
-    let digits: Vec<u8> = data
-        .iter()
-        .copied()
-        .take_while(|byte| *byte != b'>')
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect();
-    decode_hex_bytes(&digits)
+#[derive(Debug, Clone)]
+struct StreamFilterSpec {
+    name: String,
+    params: Option<DecodeParams>,
 }
 
-fn ascii85_decode(data: &[u8]) -> Result<Vec<u8>, ConvertError> {
-    let mut output = Vec::new();
-    let mut group = Vec::new();
-    for byte in data
-        .iter()
-        .copied()
-        .filter(|byte| !byte.is_ascii_whitespace())
+fn stream_filter_specs(dictionary: &PdfDictionary) -> Vec<StreamFilterSpec> {
+    let filters = stream_filters(dictionary);
+    let params = decode_params(dictionary);
+    filters
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| StreamFilterSpec {
+            name,
+            params: params_for_filter(&params, index),
+        })
+        .collect()
+}
+
+fn decode_params(dictionary: &PdfDictionary) -> Vec<Option<DecodeParams>> {
+    match dictionary
+        .get("DecodeParms")
+        .or_else(|| dictionary.get("DP"))
     {
-        match byte {
-            b'~' => break,
-            b'z' if group.is_empty() => output.extend_from_slice(&[0, 0, 0, 0]),
-            33..=117 => {
-                group.push(byte - 33);
-                if group.len() == 5 {
-                    push_ascii85_group(&mut output, &group, 4)?;
-                    group.clear();
-                }
-            }
-            _ => {}
-        }
+        Some(PdfValue::Dictionary(params)) => vec![Some(decode_params_dictionary(params))],
+        Some(PdfValue::Array(values)) => values
+            .iter()
+            .map(|value| match value {
+                PdfValue::Dictionary(params) => Some(decode_params_dictionary(params)),
+                PdfValue::Null => None,
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
     }
-    if !group.is_empty() {
-        let bytes_to_emit = group.len().saturating_sub(1);
-        while group.len() < 5 {
-            group.push(84);
-        }
-        push_ascii85_group(&mut output, &group, bytes_to_emit)?;
-    }
-    Ok(output)
 }
 
-fn push_ascii85_group(
-    output: &mut Vec<u8>,
-    group: &[u8],
-    count: usize,
-) -> Result<(), ConvertError> {
-    let mut value = 0u32;
-    for digit in group {
-        value = value
-            .checked_mul(85)
-            .and_then(|value| value.checked_add(u32::from(*digit)))
-            .ok_or_else(|| ConvertError::Pdf("invalid ASCII85 stream data".to_string()))?;
-    }
-    output.extend_from_slice(&value.to_be_bytes()[..count]);
-    Ok(())
+fn params_for_filter(params: &[Option<DecodeParams>], index: usize) -> Option<DecodeParams> {
+    params
+        .get(index)
+        .cloned()
+        .flatten()
+        .or_else(|| (params.len() == 1).then(|| params[0].clone()).flatten())
 }
 
-fn run_length_decode(data: &[u8]) -> Vec<u8> {
-    let mut output = Vec::new();
-    let mut index = 0;
-    while let Some(length) = data.get(index).copied() {
-        index += 1;
-        match length {
-            128 => break,
-            0..=127 => {
-                let count = usize::from(length) + 1;
-                output.extend_from_slice(&data[index..(index + count).min(data.len())]);
-                index += count;
-            }
-            129..=255 => {
-                if let Some(byte) = data.get(index).copied() {
-                    output.extend(std::iter::repeat_n(byte, 257 - usize::from(length)));
-                }
-                index += 1;
-            }
-        }
+fn decode_params_dictionary(dictionary: &PdfDictionary) -> DecodeParams {
+    DecodeParams {
+        predictor: integer(dictionary, "Predictor").unwrap_or(1),
+        colors: integer(dictionary, "Colors")
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(1),
+        bits_per_component: integer(dictionary, "BitsPerComponent")
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(8),
+        columns: integer(dictionary, "Columns")
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(1),
     }
-    output
+}
+
+fn integer(dictionary: &PdfDictionary, key: &str) -> Option<i64> {
+    match dictionary.get(key)? {
+        PdfValue::Integer(value) => Some(*value),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_simple_lzw_stream() {
+        assert_eq!(
+            lzw_decode(&[0x80, 0x10, 0x60, 0x20]).unwrap(),
+            b"A".to_vec()
+        );
+    }
+
+    #[test]
+    fn applies_png_sub_predictor() {
+        let params = Some(DecodeParams {
+            predictor: 15,
+            colors: 1,
+            bits_per_component: 8,
+            columns: 3,
+        });
+
+        assert_eq!(
+            apply_predictor(&[1, 10, 2, 3], &params).unwrap(),
+            vec![10, 12, 15]
+        );
+    }
+
+    #[test]
+    fn applies_tiff_predictor() {
+        let params = DecodeParams {
+            predictor: 2,
+            colors: 1,
+            bits_per_component: 8,
+            columns: 3,
+        };
+
+        assert_eq!(
+            tiff_predictor(&[10, 2, 3], &params).unwrap(),
+            vec![10, 12, 15]
+        );
+    }
 }

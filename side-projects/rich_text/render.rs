@@ -64,16 +64,28 @@ struct VisualChar {
     kind: VisualKind,
 }
 
-pub(super) fn render_inline_tagged_runs(
-    app: &App,
-    block: &Block,
-    ui: &mut Ui,
-    runs: &[StyledChar],
-    font_size: f32,
-    selection: Option<(usize, usize)>,
-    caret_pos: usize,
-    table_cell: Option<(usize, usize)>,
-) {
+pub(super) struct TaggedRuns<'a> {
+    pub app: &'a App,
+    pub ui: &'a mut Ui,
+    pub block: &'a Block,
+    pub runs: &'a [StyledChar],
+    pub font_size: f32,
+    pub selection: Option<(usize, usize)>,
+    pub caret_pos: usize,
+    pub table_cell: Option<(usize, usize)>,
+}
+
+pub(super) fn render_inline_tagged_runs(args: TaggedRuns<'_>) {
+    let TaggedRuns {
+        app,
+        ui,
+        block,
+        runs,
+        font_size,
+        selection,
+        caret_pos,
+        table_cell,
+    } = args;
     let (visual, boundaries) = build_tagged_visual(block, runs, table_cell);
     let caret_pos = boundaries[caret_pos.min(runs.len())];
     let selection = selection.map(|(start, end)| {

@@ -5,7 +5,7 @@ export function measureHtmlLayout(doc: Document): HtmlPageLayout {
   const documentWidth = measureDocumentWidth(doc);
   const documentHeight = measureDocumentHeight(doc);
   const recreatedPages = Array.from(
-    doc.querySelectorAll<HTMLElement>(".pdf-recreated-page[data-page]"),
+    doc.querySelectorAll<HTMLElement>(".pdf-recreated-page[data-page], .rich-text-pdf-page[data-page]"),
   );
 
   if (recreatedPages.length > 0) {

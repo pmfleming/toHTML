@@ -14,8 +14,10 @@ pub struct Command {
 
 mod catalog;
 mod keys;
+mod prompts;
 pub use catalog::{COMMANDS, SPECIAL_CHARS, TAG_CATALOG};
 pub use keys::handle_global_keys;
+pub use prompts::dispatch_prompt;
 
 pub fn all_command_items() -> Vec<Item> {
     COMMANDS
@@ -52,7 +54,7 @@ pub fn all_special_chars() -> Vec<Item> {
             name: format!("{ch}    {name}"),
             hint: String::new(),
             group: "char".into(),
-            search: format!("{name}"),
+            search: name.to_string(),
             kind: ItemKind::SpecialChar(*ch),
         })
         .collect()
@@ -88,105 +90,17 @@ pub fn dispatch_item(app: &mut App, item: Item) {
         ItemKind::Command(i) => (COMMANDS[i].run)(app),
         ItemKind::Tag(i) => apply_tag(app, i),
         ItemKind::SpecialChar(c) => {
-            app.push_history();
-            let style = app.current_style.clone();
-            app.doc.insert_text(&mut app.caret, &c.to_string(), &style);
-            app.dirty = true;
+            let text = c.to_string();
+            app.commit_edit(|app| {
+                let style = app.current_style.clone();
+                app.doc.insert_text(&mut app.caret, &text, &style)
+            });
         }
         ItemKind::OutlineBlock(i) => {
             app.caret.block = i;
             app.caret.char = 0;
             app.notify("Jumped to heading");
         }
-    }
-}
-
-pub fn dispatch_prompt(app: &mut App, kind: PromptKind, value: &str) {
-    let v = value.trim();
-    match kind {
-        PromptKind::LinkUrl => {
-            if v.is_empty() {
-                return;
-            }
-            app.push_history();
-            let mut style = app.current_style.clone();
-            style.link = Some(v.to_string());
-            app.doc.insert_text(&mut app.caret, v, &style);
-            app.dirty = true;
-        }
-        PromptKind::ImageUrl => {
-            app.push_history();
-            app.doc.insert_text(
-                &mut app.caret,
-                &format!("[image: {}]", v),
-                &Default::default(),
-            );
-            app.notify("Image stored as marker (no image rendering in v1)");
-            app.dirty = true;
-        }
-        PromptKind::FontSize => {
-            if let Ok(n) = v.parse::<f32>() {
-                app.settings.font_size = n.clamp(8.0, 96.0);
-                crate::settings::save(&app.settings);
-            }
-        }
-        PromptKind::LineHeight => {
-            if let Ok(n) = v.parse::<f32>() {
-                app.settings.line_height = n.clamp(1.0, 2.4);
-                crate::settings::save(&app.settings);
-            }
-        }
-        PromptKind::MaxWidth => {
-            if let Ok(n) = v.parse::<f32>() {
-                app.settings.max_width = n.clamp(300.0, 2400.0);
-                crate::settings::save(&app.settings);
-            }
-        }
-        PromptKind::PageMargin => {
-            if let Ok(n) = v.parse::<f32>() {
-                app.settings.page_margin = n.clamp(0.0, 160.0);
-                crate::settings::save(&app.settings);
-            }
-        }
-        PromptKind::FontFamily => {
-            if !v.is_empty() {
-                app.settings.font_family = v.to_string();
-                crate::settings::save(&app.settings);
-            }
-        }
-        PromptKind::Accent => {
-            if let Some(c) = parse_color(v) {
-                app.settings.accent = c;
-                crate::settings::save(&app.settings);
-                app.queue_visuals = true;
-            }
-        }
-        PromptKind::TableSize => {
-            let (rows, cols) = parse_table_size(v).unwrap_or((3, 3));
-            app.push_history();
-            app.doc.insert_table_after(&mut app.caret, rows, cols);
-            app.dirty = true;
-            app.notify(format!("Inserted {rows} x {cols} table"));
-        }
-    }
-}
-
-fn parse_table_size(s: &str) -> Option<(usize, usize)> {
-    let normalized = s.replace('X', "x").replace(',', "x").replace(' ', "");
-    let (rows, cols) = normalized.split_once('x')?;
-    Some((rows.parse().ok()?, cols.parse().ok()?))
-}
-
-fn parse_color(s: &str) -> Option<[u8; 3]> {
-    let s = s.trim().trim_start_matches('#');
-    if s.len() == 6 {
-        Some([
-            u8::from_str_radix(&s[0..2], 16).ok()?,
-            u8::from_str_radix(&s[2..4], 16).ok()?,
-            u8::from_str_radix(&s[4..6], 16).ok()?,
-        ])
-    } else {
-        None
     }
 }
 
@@ -306,6 +220,10 @@ fn cmd_redo(app: &mut App) {
 }
 
 fn cmd_toggle_bold(app: &mut App) {
+    if apply_style_to_selection(app, |style| style.bold ^= true) {
+        app.notify("Bold toggled for selection");
+        return;
+    }
     app.current_style.bold ^= true;
     app.notify(if app.current_style.bold {
         "Bold on"
@@ -314,6 +232,10 @@ fn cmd_toggle_bold(app: &mut App) {
     });
 }
 fn cmd_toggle_italic(app: &mut App) {
+    if apply_style_to_selection(app, |style| style.italic ^= true) {
+        app.notify("Italic toggled for selection");
+        return;
+    }
     app.current_style.italic ^= true;
     app.notify(if app.current_style.italic {
         "Italic on"
@@ -322,6 +244,10 @@ fn cmd_toggle_italic(app: &mut App) {
     });
 }
 fn cmd_toggle_underline(app: &mut App) {
+    if apply_style_to_selection(app, |style| style.underline ^= true) {
+        app.notify("Underline toggled for selection");
+        return;
+    }
     app.current_style.underline ^= true;
     app.notify(if app.current_style.underline {
         "Underline on"
@@ -330,14 +256,43 @@ fn cmd_toggle_underline(app: &mut App) {
     });
 }
 fn cmd_toggle_strike(app: &mut App) {
+    if apply_style_to_selection(app, |style| style.strike ^= true) {
+        app.notify("Strikethrough toggled for selection");
+        return;
+    }
     app.current_style.strike ^= true;
+    app.notify(if app.current_style.strike {
+        "Strikethrough on"
+    } else {
+        "Strikethrough off"
+    });
 }
 fn cmd_toggle_code(app: &mut App) {
+    if apply_style_to_selection(app, |style| style.code ^= true) {
+        app.notify("Inline code toggled for selection");
+        return;
+    }
     app.current_style.code ^= true;
+    app.notify(if app.current_style.code {
+        "Inline code on"
+    } else {
+        "Inline code off"
+    });
 }
 fn cmd_clear_style(app: &mut App) {
+    if apply_style_to_selection(app, |style| *style = InlineStyle::default()) {
+        app.notify("Selection style cleared");
+        return;
+    }
     app.current_style = InlineStyle::default();
     app.notify("Style cleared");
+}
+
+fn apply_style_to_selection(app: &mut App, toggle: impl Fn(&mut InlineStyle) + Copy) -> bool {
+    let Some((start, end)) = app.selection_bounds() else {
+        return false;
+    };
+    app.commit_edit(|app| app.doc.apply_style_range(&start, &end, toggle))
 }
 
 fn cmd_h1(app: &mut App) {
@@ -422,6 +377,10 @@ fn cmd_special_char(app: &mut App) {
 fn cmd_outline(app: &mut App) {
     crate::palette::open_outline(app);
 }
+fn cmd_toggle_tags(app: &mut App) {
+    app.settings.show_tags ^= true;
+    crate::settings::save(&app.settings);
+}
 fn cmd_help(app: &mut App) {
     app.show_help = true;
 }
@@ -481,7 +440,7 @@ fn cmd_reset_styles(app: &mut App) {
 fn cmd_to_p(app: &mut App) {
     app.push_history();
     app.doc
-        .transform_block_to(app.caret.block, |r| Block::Paragraph(r));
+        .transform_block_to(app.caret.block, Block::Paragraph);
     app.dirty = true;
 }
 fn cmd_to_h1(app: &mut App) {
@@ -511,25 +470,22 @@ fn cmd_to_h4(app: &mut App) {
 fn cmd_to_blockquote(app: &mut App) {
     app.push_history();
     app.doc
-        .transform_block_to(app.caret.block, |r| Block::Blockquote(r));
+        .transform_block_to(app.caret.block, Block::Blockquote);
     app.dirty = true;
 }
 fn cmd_to_bullet(app: &mut App) {
     app.push_history();
-    app.doc
-        .transform_block_to(app.caret.block, |r| Block::Bullet(r));
+    app.doc.transform_block_to(app.caret.block, Block::Bullet);
     app.dirty = true;
 }
 fn cmd_to_numbered(app: &mut App) {
     app.push_history();
-    app.doc
-        .transform_block_to(app.caret.block, |r| Block::Numbered(r));
+    app.doc.transform_block_to(app.caret.block, Block::Numbered);
     app.dirty = true;
 }
 fn cmd_to_pre(app: &mut App) {
     app.push_history();
-    app.doc
-        .transform_block_to(app.caret.block, |r| Block::Pre(r));
+    app.doc.transform_block_to(app.caret.block, Block::Pre);
     app.dirty = true;
 }
 

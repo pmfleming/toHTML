@@ -2,7 +2,16 @@ import { useCallback } from "react";
 import { DocumentPage, EmptySide } from "./DocumentPage";
 import type { PaneProps } from "../types";
 
-export function Pane({ title, icon, side, resolved, total, zoom, onPageCount }: PaneProps) {
+export function Pane({
+  title,
+  icon,
+  side,
+  resolved,
+  total,
+  zoom,
+  renderMode = "source",
+  onPageCount,
+}: PaneProps) {
   const fileId = resolved.file?.id;
   const handlePageCount = useCallback(
     (count: number) => {
@@ -40,6 +49,7 @@ export function Pane({ title, icon, side, resolved, total, zoom, onPageCount }: 
             file={resolved.file}
             localPage={resolved.localPage}
             zoom={zoom}
+            renderMode={renderMode}
             onPageCount={handlePageCount}
           />
         ) : (

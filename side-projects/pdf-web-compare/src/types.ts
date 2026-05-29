@@ -2,6 +2,8 @@ import type React from "react";
 
 export type FileKind = "pdf" | "html" | "image";
 export type Side = "input" | "output";
+export type PaneKey = Side | "editor";
+export type DocumentRenderMode = "source" | "editor";
 export type RenderJobState = "idle" | "running" | "done" | "error";
 
 export interface LibraryFile {
@@ -92,5 +94,6 @@ export interface PaneProps {
   resolved: ResolvedPage;
   total: number;
   zoom: number;
+  renderMode?: DocumentRenderMode;
   onPageCount: (side: Side, fileId: string, count: number) => void;
 }

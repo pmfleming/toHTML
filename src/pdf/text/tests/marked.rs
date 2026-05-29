@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use super::super::super::object::PdfReference;
+use super::super::super::struct_tree::McidScope;
 use super::super::*;
 
 #[test]
@@ -15,8 +17,13 @@ fn decodes_text_with_active_font_cmap() {
     let font_cmaps = HashMap::from([("F1".to_string(), cmap)]);
     let stream = b"BT /F1 12 Tf <0102> Tj ET";
 
-    let segments =
-        extract_segments_with_fonts(stream, &font_cmaps, &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &font_cmaps,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert_eq!(segments_to_text(&segments), "AB");
 }
@@ -34,8 +41,13 @@ fn keeps_symbol_font_task_markers_from_active_cmap() {
     let font_cmaps = HashMap::from([("F11".to_string(), cmap)]);
     let stream = b"BT /F11 24 Tf <0087> Tj 28 0 Td <0039> Tj ET";
 
-    let segments =
-        extract_segments_with_fonts(stream, &font_cmaps, &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &font_cmaps,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert_eq!(segments_to_text(&segments), "□ ✓");
 }
@@ -58,8 +70,13 @@ fn skips_probable_symbol_font_noise() {
 fn keeps_pdfdoc_bullet_marker() {
     let stream = b"BT (\x80) Tj 20 0 Td (Product Feature) Tj ET";
 
-    let segments =
-        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert_eq!(segments[0].text, "•");
     assert_eq!(segments_to_text(&segments), "• Product Feature");
@@ -76,8 +93,13 @@ fn keeps_split_schema_cardinality_fragments_literal() {
 fn quote_operator_moves_to_next_line_before_showing_text() {
     let stream = b"BT 1 0 0 1 10 100 Tm 20 TL (One) Tj (Two) ' ET";
 
-    let segments =
-        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert!(segments[1].y < segments[0].y);
     assert_eq!(segments_to_text(&segments), "One Two");
@@ -87,8 +109,13 @@ fn quote_operator_moves_to_next_line_before_showing_text() {
 fn applies_flipped_current_transformation_matrix_to_line_order() {
     let stream = b"q 1 0 0 -1 0 792 cm BT /F1 12 Tf 72 72 Td (Top) Tj 0 40 Td (Lower) Tj ET Q";
 
-    let segments =
-        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert!(segments[0].y > segments[1].y);
     assert_eq!(segments_to_text(&segments), "Top Lower");
@@ -98,8 +125,13 @@ fn applies_flipped_current_transformation_matrix_to_line_order() {
 fn applies_current_transformation_matrix_scale_to_font_metrics() {
     let stream = b"q 0.125 0 0 0.125 0 0 cm BT /F1 96 Tf 576 576 Td (Scaled) Tj ET Q";
 
-    let segments =
-        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert!((segments[0].font_size - 12.0).abs() < 0.1);
     assert!((segments[0].width - 32.4).abs() < 0.1);
@@ -110,8 +142,13 @@ fn applies_current_transformation_matrix_scale_to_font_metrics() {
 fn records_text_matrix_rotation() {
     let stream = b"BT 0 1 -1 0 100 100 Tm (Rotated) Tj ET";
 
-    let segments =
-        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert!((segments[0].rotation - 90.0).abs() < 0.1);
 }
@@ -127,8 +164,13 @@ fn skips_invisible_text_rendering_modes() {
 fn preserves_marked_content_role_on_segments() {
     let stream = b"BT /H1 << /MCID 0 >> BDC (Tagged Heading) Tj EMC ET";
 
-    let segments =
-        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert_eq!(segments[0].role.as_deref(), Some("H1"));
 }
@@ -138,6 +180,56 @@ fn uses_actual_text_for_marked_content() {
     let stream = b"BT /Span << /ActualText (replacement) >> BDC (xxxxx) Tj EMC ET";
 
     assert_eq!(extract_text(stream).as_deref(), Some("replacement"));
+}
+
+#[test]
+fn uses_structure_tree_actual_text_for_marked_content_mcid() {
+    let stream = b"BT /Span << /MCID 7 >> BDC (xxxxx) Tj EMC ET";
+    let actual = HashMap::from([(McidScope::unscoped(7), "semantic text".to_string())]);
+
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &actual,
+    );
+
+    assert_eq!(segments[0].text, "semantic text");
+}
+
+#[test]
+fn uses_page_scoped_structure_tree_actual_text_for_marked_content_mcid() {
+    let stream = b"BT /Span << /MCID 7 >> BDC (xxxxx) Tj EMC ET";
+    let page_one = PdfReference {
+        object: 3,
+        generation: 0,
+    };
+    let page_two = PdfReference {
+        object: 4,
+        generation: 0,
+    };
+    let actual = HashMap::from([
+        (
+            McidScope::new(Some(page_one), 7),
+            "first page semantic text".to_string(),
+        ),
+        (
+            McidScope::new(Some(page_two), 7),
+            "second page semantic text".to_string(),
+        ),
+    ]);
+
+    let segments = extract_segments_with_context(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &actual,
+        Some(page_two),
+    );
+
+    assert_eq!(segments[0].text, "second page semantic text");
 }
 
 #[test]
@@ -151,8 +243,13 @@ fn skips_artifact_marked_content() {
 fn keeps_artifact_text_segments_for_visual_rendering() {
     let stream = b"BT /Artifact BMC (colour inside) Tj EMC ET";
 
-    let segments =
-        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
 
     assert_eq!(segments[0].text, "colour inside");
     assert_eq!(segments[0].role.as_deref(), Some("Artifact"));

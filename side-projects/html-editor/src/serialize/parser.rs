@@ -1,11 +1,24 @@
-use crate::doc::{Block, Doc, Image, InlineStyle, StyledChar, Table, TableCell, TableRow};
+use crate::doc::{
+    chars_to_string, Block, Doc, Image, InlineStyle, PdfBox, PdfElement, PdfImageElement, PdfInk,
+    PdfLinkOverlay, PdfPage, PdfPath, PdfShape, PdfTextFragment, StyledChar, Table, TableCell,
+    TableRow,
+};
 
 pub fn parse_html(input: &str) -> Doc {
     let body = extract_body(input);
-    let article = extract_pdf_article(body)
+    let mut blocks = parse_pdf_pages(body)
+        .into_iter()
+        .map(Block::PdfPage)
+        .collect::<Vec<_>>();
+
+    if let Some(article) = extract_pdf_article(body)
         .or_else(|| extract_first_tag(body, "article").map(|s| s.to_string()))
-        .unwrap_or_else(|| body.to_string());
-    let mut blocks = parse_blocks(&article);
+    {
+        blocks.extend(parse_blocks(&article));
+    } else if blocks.is_empty() {
+        blocks = parse_blocks(body);
+    }
+
     if blocks.is_empty() {
         blocks.push(Block::Paragraph(Vec::new()));
     }
@@ -30,6 +43,240 @@ fn extract_pdf_article(body: &str) -> Option<String> {
     let before = rfind_ascii_ci(&body[..details_start], "<details")?;
     let after = find_ascii_ci(&body[before..], "</details>").map(|i| before + i)?;
     extract_first_tag(&body[before..after], "article").map(|s| s.to_string())
+}
+
+fn parse_pdf_pages(body: &str) -> Vec<PdfPage> {
+    extract_tag_items_with_open(body, "section")
+        .into_iter()
+        .filter(|(open, _)| {
+            attr(open, "class")
+                .map(|class| class.contains("pdf-recreated-page"))
+                .unwrap_or(false)
+        })
+        .map(|(open, inner)| parse_pdf_page(&open, &inner))
+        .collect()
+}
+
+fn parse_pdf_page(open: &str, inner: &str) -> PdfPage {
+    let style = attr(open, "style").unwrap_or_default();
+    PdfPage {
+        page: attr(open, "data-page").and_then(|v| v.parse().ok()),
+        class_name: attr(open, "class").unwrap_or_else(|| "pdf-recreated-page".into()),
+        width_pt: style_number(&style, "width"),
+        height_pt: style_number(&style, "height"),
+        style,
+        elements: parse_pdf_elements(inner),
+    }
+}
+
+fn parse_pdf_elements(html: &str) -> Vec<PdfElement> {
+    let bytes = html.as_bytes();
+    let mut elements = Vec::new();
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        let Some(start_rel) = html[pos..].find('<') else {
+            break;
+        };
+        let start = pos + start_rel;
+        let Some(end_rel) = html[start..].find('>') else {
+            break;
+        };
+        let open_end = start + end_rel;
+        let raw_tag = &html[start + 1..open_end];
+        let tag = tag_name(raw_tag);
+        let after_tag = open_end + 1;
+
+        match tag.as_str() {
+            "span" if has_class(raw_tag, "pdf-text-fragment") => {
+                if let Some((inner, next)) = inner_and_next(html, after_tag, "span") {
+                    elements.push(PdfElement::Text(parse_pdf_text(raw_tag, inner)));
+                    pos = next;
+                } else {
+                    pos = after_tag;
+                }
+            }
+            "img" if has_class(raw_tag, "pdf-image") => {
+                elements.push(PdfElement::Image(parse_pdf_image(raw_tag)));
+                pos = after_tag;
+            }
+            "div" if has_class(raw_tag, "pdf-shape") => {
+                elements.push(PdfElement::Shape(parse_pdf_shape(raw_tag)));
+                pos = skip_tag(html, after_tag, "div").unwrap_or(after_tag);
+            }
+            "svg" if has_class(raw_tag, "pdf-ink") => {
+                if let Some((inner, next)) = inner_and_next(html, after_tag, "svg") {
+                    elements.push(PdfElement::Ink(parse_pdf_ink(raw_tag, inner)));
+                    pos = next;
+                } else {
+                    pos = after_tag;
+                }
+            }
+            "a" if has_class(raw_tag, "pdf-link-overlay") => {
+                elements.push(PdfElement::Link(parse_pdf_link(raw_tag)));
+                pos = skip_tag(html, after_tag, "a").unwrap_or(after_tag);
+            }
+            _ => {
+                pos = after_tag;
+            }
+        }
+    }
+    elements
+}
+
+fn parse_pdf_text(open: &str, inner: &str) -> PdfTextFragment {
+    let style = attr(open, "style").unwrap_or_default();
+    let transform = style_property(&style, "transform");
+    PdfTextFragment {
+        class_name: attr(open, "class").unwrap_or_else(|| "pdf-text-fragment".into()),
+        bounds: parse_pdf_box(&style),
+        font_size_pt: style_number(&style, "font-size"),
+        font_weight: style_property(&style, "font-weight").and_then(|v| v.parse().ok()),
+        font_family: style_property(&style, "font-family"),
+        font_style: style_property(&style, "font-style"),
+        color: style_property(&style, "color"),
+        rotation_deg: transform
+            .as_deref()
+            .and_then(|value| transform_number(value, "rotate")),
+        scale_x: transform
+            .as_deref()
+            .and_then(|value| transform_number(value, "scaleX")),
+        transform,
+        style,
+        text: chars_to_string(&parse_inline(inner)),
+    }
+}
+
+fn parse_pdf_image(open: &str) -> PdfImageElement {
+    let style = attr(open, "style").unwrap_or_default();
+    PdfImageElement {
+        class_name: attr(open, "class").unwrap_or_else(|| "pdf-image".into()),
+        bounds: parse_pdf_box(&style),
+        src: attr(open, "src").unwrap_or_default(),
+        alt: attr(open, "alt").unwrap_or_default(),
+        style,
+    }
+}
+
+fn parse_pdf_shape(open: &str) -> PdfShape {
+    let style = attr(open, "style").unwrap_or_default();
+    let border = style_property(&style, "border");
+    PdfShape {
+        class_name: attr(open, "class").unwrap_or_else(|| "pdf-shape".into()),
+        bounds: parse_pdf_box(&style),
+        background: style_property(&style, "background"),
+        border_width_pt: border.as_deref().and_then(border_width),
+        border_color: border.as_deref().and_then(border_color),
+        border,
+        style,
+    }
+}
+
+fn parse_pdf_ink(open: &str, inner: &str) -> PdfInk {
+    let style = attr(open, "style").unwrap_or_default();
+    PdfInk {
+        class_name: attr(open, "class").unwrap_or_else(|| "pdf-ink".into()),
+        bounds: parse_pdf_box(&style),
+        view_box: attr(open, "viewBox").or_else(|| attr(open, "viewbox")),
+        paths: parse_pdf_paths(inner),
+        style,
+    }
+}
+
+fn parse_pdf_paths(inner: &str) -> Vec<PdfPath> {
+    let mut paths = Vec::new();
+    let mut pos = 0usize;
+    while pos < inner.len() {
+        let Some(start_rel) = find_ascii_ci(&inner[pos..], "<path") else {
+            break;
+        };
+        let start = pos + start_rel;
+        let Some(end_rel) = inner[start..].find('>') else {
+            break;
+        };
+        let open = &inner[start + 1..start + end_rel];
+        paths.push(PdfPath {
+            d: attr(open, "d").unwrap_or_default(),
+            fill: attr(open, "fill"),
+            stroke: attr(open, "stroke"),
+            stroke_width: attr(open, "stroke-width"),
+        });
+        pos = start + end_rel + 1;
+    }
+    paths
+}
+
+fn parse_pdf_link(open: &str) -> PdfLinkOverlay {
+    let style = attr(open, "style").unwrap_or_default();
+    PdfLinkOverlay {
+        class_name: attr(open, "class").unwrap_or_else(|| "pdf-link-overlay".into()),
+        bounds: parse_pdf_box(&style),
+        href: attr(open, "href").unwrap_or_default(),
+        label: attr(open, "aria-label").or_else(|| attr(open, "title")),
+        style,
+    }
+}
+
+fn parse_pdf_box(style: &str) -> PdfBox {
+    PdfBox {
+        left_pt: style_number(style, "left"),
+        top_pt: style_number(style, "top"),
+        width_pt: style_number(style, "width"),
+        height_pt: style_number(style, "height"),
+    }
+}
+
+fn has_class(open: &str, class_name: &str) -> bool {
+    attr(open, "class")
+        .map(|class| class.split_whitespace().any(|item| item == class_name))
+        .unwrap_or(false)
+}
+
+fn style_number(style: &str, name: &str) -> Option<f32> {
+    let value = style_property(style, name)?;
+    css_number(&value)
+}
+
+fn css_number(value: &str) -> Option<f32> {
+    value
+        .trim()
+        .trim_end_matches("deg")
+        .trim_end_matches("pt")
+        .trim_end_matches("px")
+        .trim_end_matches('%')
+        .parse()
+        .ok()
+}
+
+fn transform_number(transform: &str, name: &str) -> Option<f32> {
+    let transform_lower = transform.to_ascii_lowercase();
+    let name_lower = name.to_ascii_lowercase();
+    let name_start = transform_lower.find(&name_lower)?;
+    let after_name = name_start + name_lower.len();
+    let open = transform_lower[after_name..].find('(')? + after_name;
+    let close = transform_lower[open + 1..].find(')')? + open + 1;
+    css_number(&transform[open + 1..close])
+}
+
+fn border_width(border: &str) -> Option<f32> {
+    border.split_whitespace().find_map(css_number)
+}
+
+fn border_color(border: &str) -> Option<String> {
+    border
+        .split_whitespace()
+        .find(|token| token.starts_with('#') && token.len() >= 4)
+        .map(str::to_string)
+}
+
+fn style_property(style: &str, name: &str) -> Option<String> {
+    style.split(';').find_map(|decl| {
+        let (key, value) = decl.split_once(':')?;
+        if key.trim().eq_ignore_ascii_case(name) {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn parse_blocks(html: &str) -> Vec<Block> {
@@ -159,37 +406,73 @@ fn parse_table(html: &str) -> Table {
     let caption = extract_first_tag(html, "caption").map(parse_inline);
     let rows = extract_tag_items(html, "tr")
         .into_iter()
-        .map(|row_html| {
-            let mut cells = Vec::new();
-            cells.extend(extract_cells(&row_html, "th", true));
-            cells.extend(extract_cells(&row_html, "td", false));
-            TableRow { cells }
+        .map(|row_html| TableRow {
+            cells: extract_row_cells(&row_html),
         })
         .filter(|row| !row.cells.is_empty())
         .collect();
     Table { caption, rows }
 }
 
-fn extract_cells(row_html: &str, tag: &str, header: bool) -> Vec<TableCell> {
-    extract_tag_items_with_open(row_html, tag)
-        .into_iter()
-        .map(|(open, inner)| TableCell {
+fn extract_row_cells(row_html: &str) -> Vec<TableCell> {
+    let mut cells = Vec::new();
+    let mut pos = 0usize;
+    while pos < row_html.len() {
+        let next_th = find_ascii_ci(&row_html[pos..], "<th").map(|idx| (pos + idx, "th", true));
+        let next_td = find_ascii_ci(&row_html[pos..], "<td").map(|idx| (pos + idx, "td", false));
+        let Some((start, tag, header)) = earliest_cell(next_th, next_td) else {
+            break;
+        };
+        let Some(open_end_rel) = row_html[start..].find('>') else {
+            break;
+        };
+        let open_end = start + open_end_rel;
+        let inner_start = open_end + 1;
+        let close = format!("</{tag}>");
+        let Some(end_rel) = find_ascii_ci(&row_html[inner_start..], &close) else {
+            break;
+        };
+        let end = inner_start + end_rel;
+        cells.push(parse_table_cell(
+            &row_html[start + 1..open_end],
+            &row_html[inner_start..end],
             header,
-            colspan: attr(&open, "colspan")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1),
-            rowspan: attr(&open, "rowspan")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1),
-            align: attr(&open, "style").and_then(|s| {
-                s.to_lowercase()
-                    .split("text-align:")
-                    .nth(1)
-                    .map(|v| v.trim().trim_end_matches(';').to_string())
-            }),
-            content: parse_inline(&inner),
-        })
-        .collect()
+        ));
+        pos = end + close.len();
+    }
+    cells
+}
+
+fn earliest_cell(
+    left: Option<(usize, &'static str, bool)>,
+    right: Option<(usize, &'static str, bool)>,
+) -> Option<(usize, &'static str, bool)> {
+    match (left, right) {
+        (Some(l), Some(r)) if l.0 <= r.0 => Some(l),
+        (Some(_), Some(r)) => Some(r),
+        (Some(l), None) => Some(l),
+        (None, Some(r)) => Some(r),
+        (None, None) => None,
+    }
+}
+
+fn parse_table_cell(open: &str, inner: &str, header: bool) -> TableCell {
+    TableCell {
+        header,
+        colspan: attr(open, "colspan")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1),
+        rowspan: attr(open, "rowspan")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1),
+        align: attr(open, "style").and_then(|s| {
+            s.to_lowercase()
+                .split("text-align:")
+                .nth(1)
+                .map(|v| v.trim().trim_end_matches(';').to_string())
+        }),
+        content: parse_inline(inner),
+    }
 }
 
 fn parse_image(open_tag: &str) -> Image {
@@ -459,7 +742,111 @@ mod tests {
         let doc = parse_html(
             r#"<body><main><section class="pdf-recreated-page">visual</section><details class="pdf-extracted-content"><summary>Extracted</summary><article><p>Hello</p></article></details></main></body>"#,
         );
-        assert_eq!(doc.blocks.first().map(Block::text), Some("Hello".into()));
+        assert!(matches!(doc.blocks.first(), Some(Block::PdfPage(_))));
+        assert_eq!(doc.blocks.get(1).map(Block::text), Some("Hello".into()));
+    }
+
+    #[test]
+    fn parses_pdf_visual_page_subset() {
+        let doc = parse_html(
+            r##"<body><main class="pdf-reconstructed-document">
+              <section class="pdf-recreated-page pdf-prose-page" data-page="2" style="width:596.00pt;height:842.00pt">
+                <div class="pdf-shape" style="left:10.00pt;top:20.00pt;width:30.00pt;height:4.00pt;background:#000000;border:0.75pt solid #c00000"></div>
+                <span class="pdf-text-fragment pdf-rotated-text" style="left:42.00pt;top:50.00pt;font-size:11.04pt;width:70.00pt;height:12.00pt;font-family:Courier New, Courier, monospace;font-weight:700;font-style:italic;color:#365f91;transform:rotate(90.00deg) scaleX(0.68);transform-origin:left top">Hello &amp; PDF</span>
+                <img class="pdf-image" src="data:image/png;base64,abc" alt="Logo" style="left:1.00pt;top:2.00pt;width:3.00pt;height:4.00pt">
+                <svg class="pdf-ink" style="left:0;top:0;width:10.00pt;height:10.00pt" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0L10 10" fill="#dedede"/></svg>
+                <a class="pdf-link-overlay" href="https://example.com" aria-label="Example" style="left:5.00pt;top:6.00pt;width:7.00pt;height:8.00pt"></a>
+              </section>
+              <details class="pdf-extracted-content"><summary>Extracted</summary><article><p>Hello</p></article></details>
+            </main></body>"##,
+        );
+
+        let Some(Block::PdfPage(page)) = doc.blocks.first() else {
+            panic!("expected parsed PDF page");
+        };
+        assert_eq!(page.page, Some(2));
+        assert_eq!(page.width_pt, Some(596.0));
+        assert_eq!(page.height_pt, Some(842.0));
+        assert_eq!(page.elements.len(), 5);
+        assert!(matches!(page.elements[0], PdfElement::Shape(_)));
+        assert!(matches!(page.elements[1], PdfElement::Text(_)));
+        assert!(matches!(page.elements[2], PdfElement::Image(_)));
+        assert!(matches!(page.elements[3], PdfElement::Ink(_)));
+        assert!(matches!(page.elements[4], PdfElement::Link(_)));
+        let PdfElement::Shape(shape) = &page.elements[0] else {
+            panic!("expected shape");
+        };
+        assert_eq!(shape.border.as_deref(), Some("0.75pt solid #c00000"));
+        assert_eq!(shape.border_width_pt, Some(0.75));
+        assert_eq!(shape.border_color.as_deref(), Some("#c00000"));
+        let PdfElement::Text(text) = &page.elements[1] else {
+            panic!("expected text");
+        };
+        assert_eq!(
+            text.font_family.as_deref(),
+            Some("Courier New, Courier, monospace")
+        );
+        assert_eq!(text.font_weight, Some(700));
+        assert_eq!(text.font_style.as_deref(), Some("italic"));
+        assert_eq!(text.rotation_deg, Some(90.0));
+        assert_eq!(text.scale_x, Some(0.68));
+        assert_eq!(doc.blocks.get(1).map(Block::text), Some("Hello".into()));
+    }
+
+    #[test]
+    fn parses_real_output_visual_layers_when_available() {
+        let Some(html) =
+            output_fixture("Installation Guidelines - Prevention of Moisture Ingress for Outdoor Applications 2019-9-11 (2).html")
+        else {
+            return;
+        };
+        let doc = parse_html(&html);
+        let pages = pdf_pages(&doc);
+        assert!(!pages.is_empty());
+        let elements = pages
+            .iter()
+            .flat_map(|page| page.elements.iter())
+            .collect::<Vec<_>>();
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, PdfElement::Text(_))));
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, PdfElement::Shape(_))));
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, PdfElement::Image(_))));
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, PdfElement::Ink(_))));
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, PdfElement::Link(_))));
+        assert!(doc
+            .blocks
+            .iter()
+            .any(|block| !matches!(block, Block::PdfPage(_))));
+    }
+
+    #[test]
+    fn parses_real_output_borders_when_available() {
+        let Some(html) =
+            output_fixture("Installation Guidelines - Prevention of Moisture Ingress for Outdoor Applications 2019-9-11 (2).html")
+        else {
+            return;
+        };
+        let doc = parse_html(&html);
+        let pages = pdf_pages(&doc);
+        let bordered_shape = pages
+            .iter()
+            .flat_map(|page| &page.elements)
+            .find_map(|element| match element {
+                PdfElement::Shape(shape) if shape.border.is_some() => Some(shape),
+                _ => None,
+            })
+            .expect("expected at least one bordered shape in output fixture");
+        assert!(bordered_shape.border_width_pt.is_some());
+        assert!(bordered_shape.border_color.is_some());
     }
 
     #[test]
@@ -490,5 +877,54 @@ mod tests {
             })],
         };
         assert!(serialize_document(&doc).contains("<th>Name</th>"));
+    }
+
+    #[test]
+    fn parses_table_cells_in_source_order() {
+        let doc = parse_html(
+            r#"<body><article><table><tr><td>A</td><th>B</th><td>C</td></tr></table></article></body>"#,
+        );
+        let Some(Block::Table(table)) = doc.blocks.first() else {
+            panic!("expected table");
+        };
+        let row = &table.rows[0];
+        assert_eq!(chars_to_string(&row.cells[0].content), "A");
+        assert!(!row.cells[0].header);
+        assert_eq!(chars_to_string(&row.cells[1].content), "B");
+        assert!(row.cells[1].header);
+        assert_eq!(chars_to_string(&row.cells[2].content), "C");
+        assert!(!row.cells[2].header);
+    }
+
+    #[test]
+    fn serializes_pdf_visual_pages_with_extracted_article() {
+        let doc = parse_html(
+            r#"<body><main class="pdf-reconstructed-document"><section class="pdf-recreated-page" data-page="1" style="width:10.00pt;height:10.00pt"><span class="pdf-text-fragment" style="left:1.00pt;top:2.00pt;font-size:3.00pt;color:#000000">Hi</span></section><details class="pdf-extracted-content"><summary>Extracted</summary><article><p>Hello</p></article></details></main></body>"#,
+        );
+        let html = serialize_document(&doc);
+        assert!(html.contains(r#"<main class="pdf-reconstructed-document">"#));
+        assert!(html.contains(r#"<section class="pdf-recreated-page" data-page="1""#));
+        assert!(html.contains(r#"class="pdf-text-fragment""#));
+        assert!(html.contains(r#"<details class="pdf-extracted-content" open>"#));
+        assert!(html.contains("<p>Hello</p>"));
+    }
+
+    fn output_fixture(name: &str) -> Option<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("output")
+            .join(name);
+        std::fs::read_to_string(path).ok()
+    }
+
+    fn pdf_pages(doc: &Doc) -> Vec<&PdfPage> {
+        doc.blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::PdfPage(page) => Some(page),
+                _ => None,
+            })
+            .collect()
     }
 }

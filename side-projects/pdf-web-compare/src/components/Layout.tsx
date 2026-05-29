@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight, RotateCcw } from "lucide-react";
-import type { FileCoverage, LibraryResponse, ResolvedPairPage } from "../types";
+import { Check, ChevronLeft, ChevronRight, Eye, EyeOff, FolderOpen, RotateCcw } from "lucide-react";
+import type { FileCoverage, FilePair, LibraryResponse, PaneKey, ResolvedPairPage } from "../types";
 import { clamp } from "../utils";
 
 export function StatusBar({
@@ -75,21 +75,64 @@ export function Navigator({
   );
 }
 
+export function ViewToggles({
+  visiblePanes,
+  onToggle,
+}: {
+  visiblePanes: Record<PaneKey, boolean>;
+  onToggle: (pane: PaneKey) => void;
+}) {
+  return (
+    <section className="view-toggles" aria-label="Visible comparison panes">
+      {paneToggleItems.map((item) => {
+        const active = visiblePanes[item.key];
+        return (
+          <button
+            key={item.key}
+            className={`toggle-button ${active ? "active" : ""}`}
+            type="button"
+            aria-pressed={active}
+            title={`${active ? "Hide" : "Show"} ${item.label} pane`}
+            onClick={() => onToggle(item.key)}
+          >
+            {active ? <Eye size={16} /> : <EyeOff size={16} />}
+            {item.label}
+          </button>
+        );
+      })}
+    </section>
+  );
+}
+
 export function PairStrip({
   pairPage,
+  pairs,
   pairIndex,
   totalPairs,
+  onPairChange,
 }: {
   pairPage: ResolvedPairPage;
+  pairs: FilePair[];
   pairIndex: number;
   totalPairs: number;
+  onPairChange: (pairId: string) => void;
 }) {
   if (!pairPage.pair) {
     return null;
   }
   return (
     <section className="pair-strip" aria-label="Current matched file">
-      <strong>{pairPage.pair.name}</strong>
+      <select
+        aria-label="Jump to matched file"
+        value={pairPage.pair.id}
+        onChange={(event) => onPairChange(event.currentTarget.value)}
+      >
+        {pairs.map((pair, index) => (
+          <option key={pair.id} value={pair.id}>
+            {pairOptionLabel(pair, index)}
+          </option>
+        ))}
+      </select>
       <span>
         matched file {pairIndex + 1} of {totalPairs}, page {pairPage.localPage} of{" "}
         {pairPage.pairPageCount}
@@ -98,12 +141,67 @@ export function PairStrip({
   );
 }
 
-export function FolderHints({ library }: { library: LibraryResponse | null }) {
+const paneToggleItems: Array<{ key: PaneKey; label: string }> = [
+  { key: "input", label: "Input" },
+  { key: "output", label: "Output" },
+  { key: "editor", label: "Editor" },
+];
+
+function pairOptionLabel(pair: FilePair, index: number) {
+  const fileName = pair.input?.relativePath ?? pair.output?.relativePath ?? pair.name;
+  const matchState = pair.input && pair.output
+    ? "matched"
+    : pair.input
+      ? "missing output"
+      : "output only";
+  return `${index + 1}. ${fileName} (${matchState})`;
+}
+
+export function FolderHints({
+  library,
+  inputFolderDraft,
+  inputFolderDisabled,
+  onInputFolderDraftChange,
+  onApplyInputFolder,
+  onPickInputFolder,
+}: {
+  library: LibraryResponse | null;
+  inputFolderDraft: string;
+  inputFolderDisabled: boolean;
+  onInputFolderDraftChange: (value: string) => void;
+  onApplyInputFolder: (value: string) => void;
+  onPickInputFolder: () => void;
+}) {
   return (
     <section className="folder-hints">
       <div>
         <strong>Input</strong>
-        <span>{library?.inputDir ?? "loading..."}</span>
+        <form
+          className="folder-picker"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const input = form.elements.namedItem("inputFolder");
+            onApplyInputFolder(input instanceof HTMLInputElement ? input.value : inputFolderDraft);
+          }}
+        >
+          <input
+            name="inputFolder"
+            aria-label="Input folder"
+            value={inputFolderDraft}
+            disabled={inputFolderDisabled}
+            placeholder={library ? "Choose an input folder" : "Loading..."}
+            onChange={(event) => onInputFolderDraftChange(event.currentTarget.value)}
+          />
+          <button type="submit" disabled={inputFolderDisabled} title="Use this input folder">
+            <Check size={16} />
+            Apply
+          </button>
+          <button type="button" disabled={inputFolderDisabled} title="Choose input folder" onClick={onPickInputFolder}>
+            <FolderOpen size={16} />
+            Choose
+          </button>
+        </form>
       </div>
       <div>
         <strong>Output</strong>

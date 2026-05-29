@@ -6,8 +6,15 @@ description = "Local-first document to structured HTML converter"
 license = "MIT"
 
 [dependencies]
-eframe = "0.34.2"
 flate2 = "1.1.9"
+encoding_rs = "0.8.35"
+pdf-font = "1.0.0-beta.3"
 quick-xml = "0.40.1"
-rfd = "0.17.2"
+ttf-parser = "0.25.1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+eframe = { version = "0.34.2", optional = true }
+rfd = { version = "0.17.2", optional = true }
+
+[features]
+default = []
+interactive-gui = ["dep:eframe", "dep:rfd"]

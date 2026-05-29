@@ -1,6 +1,7 @@
 //! Document model: blocks of styled characters, tables, and editing primitives.
 
 use serde::{Deserialize, Serialize};
+mod editing;
 mod runs;
 mod table;
 
@@ -59,6 +60,7 @@ pub enum Block {
     Pre(Vec<StyledChar>),
     Table(Table),
     Image(Image),
+    PdfPage(PdfPage),
     PageBreak(Option<u32>),
     PagePlaceholder { page: Option<u32>, reason: String },
     RawHtml(String),
@@ -109,6 +111,143 @@ pub struct Image {
     pub height: Option<u32>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PdfPage {
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub class_name: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub width_pt: Option<f32>,
+    #[serde(default)]
+    pub height_pt: Option<f32>,
+    #[serde(default)]
+    pub elements: Vec<PdfElement>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PdfElement {
+    Text(PdfTextFragment),
+    Image(PdfImageElement),
+    Shape(PdfShape),
+    Ink(PdfInk),
+    Link(PdfLinkOverlay),
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PdfBox {
+    #[serde(default)]
+    pub left_pt: Option<f32>,
+    #[serde(default)]
+    pub top_pt: Option<f32>,
+    #[serde(default)]
+    pub width_pt: Option<f32>,
+    #[serde(default)]
+    pub height_pt: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PdfTextFragment {
+    #[serde(default)]
+    pub class_name: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub bounds: PdfBox,
+    #[serde(default)]
+    pub font_size_pt: Option<f32>,
+    #[serde(default)]
+    pub font_weight: Option<u16>,
+    #[serde(default)]
+    pub font_family: Option<String>,
+    #[serde(default)]
+    pub font_style: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub transform: Option<String>,
+    #[serde(default)]
+    pub rotation_deg: Option<f32>,
+    #[serde(default)]
+    pub scale_x: Option<f32>,
+    #[serde(default)]
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PdfImageElement {
+    #[serde(default)]
+    pub class_name: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub bounds: PdfBox,
+    #[serde(default)]
+    pub src: String,
+    #[serde(default)]
+    pub alt: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PdfShape {
+    #[serde(default)]
+    pub class_name: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub bounds: PdfBox,
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default)]
+    pub border: Option<String>,
+    #[serde(default)]
+    pub border_width_pt: Option<f32>,
+    #[serde(default)]
+    pub border_color: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PdfInk {
+    #[serde(default)]
+    pub class_name: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub bounds: PdfBox,
+    #[serde(default)]
+    pub view_box: Option<String>,
+    #[serde(default)]
+    pub paths: Vec<PdfPath>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PdfPath {
+    #[serde(default)]
+    pub d: String,
+    #[serde(default)]
+    pub fill: Option<String>,
+    #[serde(default)]
+    pub stroke: Option<String>,
+    #[serde(default)]
+    pub stroke_width: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PdfLinkOverlay {
+    #[serde(default)]
+    pub class_name: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub bounds: PdfBox,
+    #[serde(default)]
+    pub href: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
 impl Block {
     pub fn inline(&self) -> Option<&Vec<StyledChar>> {
         match self {
@@ -120,6 +259,7 @@ impl Block {
             | Block::Pre(v) => Some(v),
             Block::Table(_)
             | Block::Image(_)
+            | Block::PdfPage(_)
             | Block::PageBreak(_)
             | Block::PagePlaceholder { .. }
             | Block::RawHtml(_)
@@ -136,6 +276,7 @@ impl Block {
             | Block::Pre(v) => Some(v),
             Block::Table(_)
             | Block::Image(_)
+            | Block::PdfPage(_)
             | Block::PageBreak(_)
             | Block::PagePlaceholder { .. }
             | Block::RawHtml(_)
@@ -160,6 +301,13 @@ impl Block {
                 .collect::<Vec<_>>()
                 .join("\n"),
             Block::Image(image) => image.alt.clone(),
+            Block::PdfPage(page) => {
+                let page = page
+                    .page
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".into());
+                format!("PDF page {page}")
+            }
             Block::PageBreak(page) => page
                 .map(|n| format!("page break {n}"))
                 .unwrap_or_else(|| "page break".into()),
@@ -184,6 +332,7 @@ impl Block {
             Block::Pre(_) => "pre".into(),
             Block::Table(_) => "table".into(),
             Block::Image(_) => "img".into(),
+            Block::PdfPage(_) => "section".into(),
             Block::PageBreak(_) => "hr".into(),
             Block::PagePlaceholder { .. } => "div".into(),
             Block::RawHtml(_) => "raw".into(),
@@ -319,237 +468,6 @@ impl Doc {
         }
         tags.join("  ›  ")
     }
-
-    pub fn insert_text(&mut self, caret: &mut Caret, text: &str, style: &InlineStyle) {
-        if self.blocks.is_empty() {
-            self.blocks.push(Block::Paragraph(Vec::new()));
-            caret.block = 0;
-            caret.char = 0;
-        }
-        if let Some(runs) = self.current_inline_mut(caret) {
-            for c in text.chars() {
-                runs.insert(
-                    caret.char,
-                    StyledChar {
-                        ch: c,
-                        style: style.clone(),
-                    },
-                );
-                caret.char += 1;
-            }
-        }
-    }
-
-    pub fn backspace(&mut self, caret: &mut Caret) {
-        if caret.block >= self.blocks.len() {
-            return;
-        }
-        if caret.char == 0 {
-            if matches!(self.blocks[caret.block], Block::Table(_)) {
-                return;
-            }
-            // Merge with previous block if any
-            if caret.block == 0 {
-                return;
-            }
-            let cur = self.blocks.remove(caret.block);
-            caret.block -= 1;
-            let new_char = self.blocks[caret.block].len();
-            let cur_inline = match cur {
-                Block::Hr => None,
-                _ => Some(cur.inline().cloned().unwrap_or_default()),
-            };
-            if let (Some(items), Some(prev)) = (cur_inline, self.blocks[caret.block].inline_mut()) {
-                prev.extend(items);
-            }
-            caret.char = new_char;
-            return;
-        }
-        if let Some(runs) = self.current_inline_mut(caret) {
-            if caret.char > 0 && caret.char <= runs.len() {
-                runs.remove(caret.char - 1);
-                caret.char -= 1;
-            }
-        }
-    }
-
-    pub fn delete_forward(&mut self, caret: &mut Caret) {
-        let len = self.current_len(caret);
-        if caret.char < len {
-            if let Some(runs) = self.current_inline_mut(caret) {
-                runs.remove(caret.char);
-            }
-        } else if caret.block + 1 < self.blocks.len() {
-            let next = self.blocks.remove(caret.block + 1);
-            let next_inline = match next {
-                Block::Hr => None,
-                _ => Some(next.inline().cloned().unwrap_or_default()),
-            };
-            if let (Some(items), Some(cur)) = (next_inline, self.blocks[caret.block].inline_mut()) {
-                cur.extend(items);
-            }
-        }
-    }
-
-    pub fn split_block(&mut self, caret: &mut Caret) {
-        if self.blocks.is_empty() {
-            self.blocks.push(Block::Paragraph(Vec::new()));
-            caret.block = 0;
-            caret.char = 0;
-            return;
-        }
-        let cur_kind = self.blocks[caret.block].clone();
-        if matches!(cur_kind, Block::Table(_)) {
-            let style = self.current_style_at(caret);
-            self.insert_text(caret, "\n", &style);
-            return;
-        }
-        // Empty list item → exit list (turn into paragraph after the list-style block)
-        if cur_kind.is_list_item() && cur_kind.len() == 0 {
-            self.blocks[caret.block] = Block::Paragraph(Vec::new());
-            caret.char = 0;
-            return;
-        }
-        // Empty blockquote → escape
-        if matches!(cur_kind, Block::Blockquote(_)) && cur_kind.len() == 0 {
-            self.blocks[caret.block] = Block::Paragraph(Vec::new());
-            caret.char = 0;
-            return;
-        }
-        let tail: Vec<StyledChar> = {
-            let Some(runs) = self.blocks[caret.block].inline_mut() else {
-                return;
-            };
-            runs.split_off(caret.char.min(runs.len()))
-        };
-        let new_block = match &cur_kind {
-            Block::Heading(_, _) => Block::Paragraph(tail), // Enter in heading → paragraph
-            Block::Bullet(_) => Block::Bullet(tail),
-            Block::Numbered(_) => Block::Numbered(tail),
-            Block::Blockquote(_) => Block::Blockquote(tail),
-            Block::Pre(_) => Block::Pre(tail),
-            _ => Block::Paragraph(tail),
-        };
-        self.blocks.insert(caret.block + 1, new_block);
-        caret.block += 1;
-        caret.char = 0;
-    }
-
-    pub fn move_left(&self, caret: &mut Caret) {
-        if caret.char > 0 {
-            caret.char -= 1;
-            return;
-        }
-        if caret.block > 0 {
-            caret.block -= 1;
-            caret.char = self.blocks[caret.block].len();
-        }
-    }
-    pub fn move_right(&self, caret: &mut Caret) {
-        let len = self.current_len(caret);
-        if caret.char < len {
-            caret.char += 1;
-            return;
-        }
-        if caret.block + 1 < self.blocks.len() {
-            caret.block += 1;
-            caret.char = 0;
-            caret.table_row = 0;
-            caret.table_col = 0;
-        }
-    }
-
-    pub fn transform_block_to<F: FnOnce(Vec<StyledChar>) -> Block>(&mut self, idx: usize, mk: F) {
-        let Some(b) = self.blocks.get_mut(idx) else {
-            return;
-        };
-        let runs = if let Some(v) = b.inline_mut() {
-            std::mem::take(v)
-        } else {
-            return;
-        };
-        *b = mk(runs);
-    }
-
-    pub fn apply_style_range(&mut self, lo: &Caret, hi: &Caret, toggle: impl Fn(&mut InlineStyle)) {
-        for bi in lo.block..=hi.block {
-            let Some(b) = self.blocks.get_mut(bi) else {
-                continue;
-            };
-            let Some(runs) = b.inline_mut() else {
-                continue;
-            };
-            let len = runs.len();
-            let start = if bi == lo.block { lo.char.min(len) } else { 0 };
-            let end = if bi == hi.block {
-                hi.char.min(len)
-            } else {
-                len
-            };
-            for i in start..end {
-                if let Some(c) = runs.get_mut(i) {
-                    toggle(&mut c.style);
-                }
-            }
-        }
-    }
-
-    pub fn current_style_at(&self, caret: &Caret) -> InlineStyle {
-        let Some(runs) = self.current_inline(caret) else {
-            return InlineStyle::default();
-        };
-        if runs.is_empty() {
-            return InlineStyle::default();
-        }
-        let idx = caret.char.saturating_sub(1).min(runs.len() - 1);
-        runs[idx].style.clone()
-    }
-
-    pub fn current_len(&self, caret: &Caret) -> usize {
-        self.current_inline(caret)
-            .map(|runs| runs.len())
-            .unwrap_or(0)
-    }
-
-    pub fn current_inline(&self, caret: &Caret) -> Option<&Vec<StyledChar>> {
-        match self.blocks.get(caret.block)? {
-            Block::Table(table) => table
-                .rows
-                .get(caret.table_row)?
-                .cells
-                .get(caret.table_col)
-                .map(|cell| &cell.content),
-            block => block.inline(),
-        }
-    }
-
-    pub fn current_inline_mut(&mut self, caret: &Caret) -> Option<&mut Vec<StyledChar>> {
-        match self.blocks.get_mut(caret.block)? {
-            Block::Table(table) => table
-                .rows
-                .get_mut(caret.table_row)?
-                .cells
-                .get_mut(caret.table_col)
-                .map(|cell| &mut cell.content),
-            block => block.inline_mut(),
-        }
-    }
-
-    pub fn move_to_block_end(&mut self, caret: &mut Caret, block: usize) {
-        caret.block = block.min(self.blocks.len().saturating_sub(1));
-        caret.table_row = 0;
-        caret.table_col = 0;
-        self.clamp_caret(caret);
-        caret.char = self.current_len(caret);
-    }
-
-    pub fn move_to_table_cell(&mut self, caret: &mut Caret, block: usize, row: usize, col: usize) {
-        caret.block = block.min(self.blocks.len().saturating_sub(1));
-        caret.table_row = row;
-        caret.table_col = col;
-        self.clamp_caret(caret);
-        caret.char = self.current_len(caret);
-    }
 }
 
 fn plain(s: &str) -> Vec<StyledChar> {
@@ -568,4 +486,133 @@ pub fn plain_chars(s: &str) -> Vec<StyledChar> {
 
 pub fn chars_to_string(runs: &[StyledChar]) -> String {
     runs.iter().map(|c| c.ch).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paragraph(text: &str) -> Block {
+        Block::Paragraph(plain(text))
+    }
+
+    fn table(rows: Vec<Vec<&str>>) -> Block {
+        Block::Table(Table {
+            caption: None,
+            rows: rows
+                .into_iter()
+                .enumerate()
+                .map(|(row_idx, cells)| TableRow {
+                    cells: cells
+                        .into_iter()
+                        .map(|text| TableCell {
+                            header: row_idx == 0,
+                            colspan: 1,
+                            rowspan: 1,
+                            align: None,
+                            content: plain(text),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn backspace_before_paragraph_does_not_drop_it_after_table() {
+        let mut doc = Doc {
+            blocks: vec![table(vec![vec!["cell"]]), paragraph("after")],
+        };
+        let mut caret = Caret {
+            block: 1,
+            char: 0,
+            table_row: 0,
+            table_col: 0,
+        };
+
+        assert!(!doc.backspace(&mut caret));
+        assert_eq!(doc.blocks.len(), 2);
+        assert_eq!(doc.blocks[1].text(), "after");
+    }
+
+    #[test]
+    fn delete_forward_before_table_does_not_drop_table() {
+        let mut doc = Doc {
+            blocks: vec![paragraph("before"), table(vec![vec!["cell"]])],
+        };
+        let mut caret = Caret {
+            block: 0,
+            char: "before".chars().count(),
+            table_row: 0,
+            table_col: 0,
+        };
+
+        assert!(!doc.delete_forward(&mut caret));
+        assert_eq!(doc.blocks.len(), 2);
+        assert!(matches!(doc.blocks[1], Block::Table(_)));
+    }
+
+    #[test]
+    fn delete_forward_still_merges_adjacent_inline_blocks() {
+        let mut doc = Doc {
+            blocks: vec![paragraph("one"), paragraph("two")],
+        };
+        let mut caret = Caret {
+            block: 0,
+            char: 3,
+            table_row: 0,
+            table_col: 0,
+        };
+
+        assert!(doc.delete_forward(&mut caret));
+        assert_eq!(doc.blocks.len(), 1);
+        assert_eq!(doc.blocks[0].text(), "onetwo");
+    }
+
+    #[test]
+    fn applies_style_ranges_inside_table_cells() {
+        let mut doc = Doc {
+            blocks: vec![table(vec![vec!["abc"]])],
+        };
+        let start = Caret {
+            block: 0,
+            char: 0,
+            table_row: 0,
+            table_col: 0,
+        };
+        let end = Caret {
+            char: 2,
+            ..start.clone()
+        };
+
+        assert!(doc.apply_style_range(&start, &end, |style| style.bold = true));
+        let Some(runs) = doc.current_inline(&start) else {
+            panic!("table cell content should be editable");
+        };
+        assert!(runs[0].style.bold);
+        assert!(runs[1].style.bold);
+        assert!(!runs[2].style.bold);
+    }
+
+    #[test]
+    fn arrow_navigation_crosses_table_cells() {
+        let doc = Doc {
+            blocks: vec![table(vec![vec!["a", "bb"], vec!["ccc", "d"]])],
+        };
+        let mut caret = Caret {
+            block: 0,
+            char: 1,
+            table_row: 0,
+            table_col: 0,
+        };
+
+        assert!(doc.move_right(&mut caret));
+        assert_eq!((caret.table_row, caret.table_col, caret.char), (0, 1, 0));
+
+        assert!(doc.move_left(&mut caret));
+        assert_eq!((caret.table_row, caret.table_col, caret.char), (0, 0, 1));
+
+        assert!(doc.move_table_row(&mut caret, 1));
+        assert_eq!((caret.table_row, caret.table_col, caret.char), (1, 0, 1));
+    }
 }

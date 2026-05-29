@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PDF Font Text Decoding Implementation Plan</title>
+</head>
+<body>
+  <header>
+    <h1>PDF Font Text Decoding Implementation Plan</h1>
+    <p>
+      Source: code review of the current PDF text decoding path on 2026-05-28.
+      Markdown source:
+      <a href="PDF_FONT_TEXT_DECODING_IMPLEMENTATION_PLAN.md">PDF_FONT_TEXT_DECODING_IMPLEMENTATION_PLAN.md</a>.
+    </p>
+    <p>
+      Goal: make the converter truthfully support PDF font-based text recovery
+      beyond simple <code>ToUnicode</code> and heuristic repairs.
+    </p>
+  </header>
+
+  <main>
+    <section id="target-behavior">
+      <h2>Target Behavior</h2>
+      <ul>
+        <li>Proper <code>/Encoding</code>, <code>/Differences</code>, and Adobe Glyph List fallback for simple fonts.</li>
+        <li>Type0/CID mapping through known CMap collections.</li>
+        <li>Embedded font table use when available.</li>
+        <li>No external OCR or page-text fallback in this implementation.</li>
+        <li>Glyph-shape decoding for embedded-font text runs when semantic mappings fail.</li>
+      </ul>
+    </section>
+
+    <section id="current-state">
+      <h2>Current State</h2>
+      <h3>Implemented</h3>
+      <ul>
+        <li><code>/ToUnicode</code> CMap parsing for <code>beginbfchar</code> and <code>beginbfrange</code>.</li>
+        <li>Page-local font resource CMap lookup.</li>
+        <li>Simple-font fallback from <code>/Encoding</code>, <code>/BaseEncoding</code>, and <code>/Differences</code>.</li>
+        <li>WinAnsi, MacRoman, and partial StandardEncoding fallback.</li>
+        <li>Compact glyph-name fallback, including <code>uniXXXX</code>, <code>uXXXX</code>, suffix stripping, and underscore-composed names.</li>
+        <li>Conservative Identity-H/Identity-V two-byte fallback for Adobe Identity/UCS.</li>
+        <li>Post-decode shifted-subset cleanup heuristics.</li>
+      </ul>
+
+      <h3>Not Implemented Yet</h3>
+      <ul>
+        <li>Complete Adobe Glyph List and full StandardEncoding/MacExpert/Symbol/ZapfDingbats coverage.</li>
+        <li>Known CID collection mappings such as Adobe-Japan1, Adobe-CNS1, Adobe-GB1, and Adobe-Korea1.</li>
+        <li>Embedded TrueType/OpenType/CFF/Type1 table parsing for Unicode recovery.</li>
+        <li>OCR/page-text fallback remains explicitly out of scope.</li>
+        <li>Glyph outline or raster shape decoding.</li>
+      </ul>
+    </section>
+
+    <section id="principles">
+      <h2>Principles</h2>
+      <ol>
+        <li>Prefer deterministic PDF semantics over cleanup heuristics.</li>
+        <li>Treat <code>/ToUnicode</code> as authoritative when present.</li>
+        <li>Use fallback mappings only for missing character codes, not to override explicit semantic mappings.</li>
+        <li>Keep glyph-shape inference conservative and clearly labeled until confidence gates are strong enough.</li>
+        <li>Emit diagnostics when text remains unmapped instead of silently returning raw private glyph codes.</li>
+        <li>Add fixture evidence before broadening a fallback path.</li>
+      </ol>
+    </section>
+
+    <section id="phase-1">
+      <h2>Phase 1: Harden Simple Font Fallback</h2>
+      <p>Files likely touched:</p>
+      <ul>
+        <li><a href="../src/pdf/cmap/encoding.rs"><code>src/pdf/cmap/encoding.rs</code></a></li>
+        <li><a href="../src/pdf/cmap/font_refs.rs"><code>src/pdf/cmap/font_refs.rs</code></a></li>
+        <li><a href="../src/pdf/cmap/tests.rs"><code>src/pdf/cmap/tests.rs</code></a></li>
+        <li><a href="../src/pdf/tests.rs"><code>src/pdf/tests.rs</code></a></li>
+      </ul>
+
+      <h3>Implementation Steps</h3>
+      <ol>
+        <li>Replace the hand-written glyph-name table with a generated compact AGL table. Keep <code>uniXXXX</code>, <code>uXXXX</code>, suffix, and underscore handling around the table.</li>
+        <li>Add full StandardEncoding coverage.</li>
+        <li>Add MacExpertEncoding if encountered in fixtures or generated tests.</li>
+        <li>Add Symbol and ZapfDingbats fallback tables for simple symbolic fonts.</li>
+        <li>Distinguish "missing mapping" from "mapped to .notdef" so callers can count unmapped characters.</li>
+        <li>Track fallback source per mapping: ToUnicode, Differences, base encoding, glyph name, or unknown.</li>
+      </ol>
+
+      <h3>Acceptance Criteria</h3>
+      <ul>
+        <li>A simple font with <code>/Encoding /WinAnsiEncoding</code> and no <code>/ToUnicode</code> emits correct punctuation, bullets, and Latin-1 characters.</li>
+        <li>A <code>/Differences</code> array maps AGL names and <code>uniXXXX</code> names correctly.</li>
+        <li><code>/ToUnicode</code> still wins over base encoding and differences.</li>
+        <li>Unknown glyph names do not become raw bytes in semantic output.</li>
+      </ul>
+
+      <h3>Tests</h3>
+      <ul>
+        <li>Add unit tests for <code>quoteright</code>, <code>quoteleft</code>, <code>endash</code>, <code>emdash</code>, <code>fi</code>, <code>fl</code>, <code>bullet</code>, <code>.notdef</code>, <code>uniFB01</code>, and underscore-composed names.</li>
+        <li>Add PDF fixture tests for WinAnsi, StandardEncoding, Symbol, and ZapfDingbats fallbacks.</li>
+      </ul>
+    </section>
+
+    <section id="phase-2">
+      <h2>Phase 2: Implement Known Type0/CID Collections</h2>
+      <p>Files likely touched:</p>
+      <ul>
+        <li><a href="../src/pdf/cmap.rs"><code>src/pdf/cmap.rs</code></a></li>
+        <li><a href="../src/pdf/cmap/font_refs.rs"><code>src/pdf/cmap/font_refs.rs</code></a></li>
+        <li><code>src/pdf/cmap/predefined.rs</code></li>
+        <li><code>src/pdf/cmap/generated/</code></li>
+      </ul>
+
+      <h3>Implementation Steps</h3>
+      <ol>
+        <li>Parse Type0 <code>/Encoding</code> names beyond Identity-H and Identity-V.</li>
+        <li>Parse descendant <code>/CIDSystemInfo</code> registry, ordering, and supplement.</li>
+        <li>Add predefined CMap data for Adobe-Japan1, Adobe-CNS1, Adobe-GB1, and Adobe-Korea1.</li>
+        <li>Support horizontal and vertical variants as character-code-to-CID decoders.</li>
+        <li>Keep CID-to-Unicode mapping separate from Identity Unicode fallback.</li>
+        <li>Add diagnostics for unsupported CID collections or supplements.</li>
+        <li>Prevent the current Identity fallback from treating arbitrary CIDs as Unicode unless the font is explicitly Adobe-UCS or another verified Unicode CID collection.</li>
+      </ol>
+
+      <h3>Acceptance Criteria</h3>
+      <ul>
+        <li>Type0 fonts with known predefined CMaps decode sample Japanese, Chinese, and Korean text when no <code>/ToUnicode</code> is present.</li>
+        <li>Identity-H with Adobe-Identity no longer claims arbitrary CID values are Unicode text unless supported by a font table or ToUnicode.</li>
+        <li>Unsupported collections produce warnings and unmapped counters.</li>
+      </ul>
+
+      <h3>Tests</h3>
+      <ul>
+        <li>Unit tests for CMap code-width parsing and multi-byte character consumption.</li>
+        <li>Fixture PDFs for one known collection per supported ordering.</li>
+        <li>Regression test proving Adobe-Identity CID <code>0x0041</code> is not blindly decoded as <code>A</code> unless the collection is known to be Unicode-safe.</li>
+      </ul>
+    </section>
+
+    <section id="phase-3">
+      <h2>Phase 3: Use Embedded Font Tables</h2>
+      <p>Files likely touched:</p>
+      <ul>
+        <li><code>src/pdf/fonts/embedded.rs</code></li>
+        <li><a href="../src/pdf/fonts.rs"><code>src/pdf/fonts.rs</code></a></li>
+        <li><a href="../src/pdf/cmap/font_refs.rs"><code>src/pdf/cmap/font_refs.rs</code></a></li>
+        <li><a href="../Cargo.toml"><code>Cargo.toml</code></a></li>
+      </ul>
+
+      <h3>Implementation Steps</h3>
+      <ol>
+        <li>Resolve <code>/FontDescriptor</code> from simple fonts and CID descendant fonts.</li>
+        <li>Extract <code>/FontFile</code>, <code>/FontFile2</code>, and <code>/FontFile3</code> streams with filters.</li>
+        <li>Add a font parser dependency after a small spike. Candidate capabilities: TrueType/OpenType <code>cmap</code>, <code>post</code>, glyph IDs, CFF charsets, and glyph outlines.</li>
+        <li>For TrueType/OpenType, read Unicode <code>cmap</code> subtables, read glyph-name data from <code>post</code> where available, and connect PDF code to glyph ID through explicit encodings, CIDToGIDMap, or embedded simple-font encodings.</li>
+        <li>For CFF/Type1, read charsets or glyph names and map glyph names through AGL.</li>
+        <li>Synthesize a ToUnicode-style map only when the PDF code to glyph relation is deterministic.</li>
+        <li>Store confidence and source metadata for each synthesized mapping.</li>
+      </ol>
+
+      <h3>Acceptance Criteria</h3>
+      <ul>
+        <li>Embedded fonts improve decoding only when table evidence establishes the mapping.</li>
+        <li>No fallback guesses override <code>/ToUnicode</code>.</li>
+        <li>Missing or encrypted font streams produce warnings, not panics.</li>
+      </ul>
+
+      <h3>Tests</h3>
+      <ul>
+        <li>Fixture with embedded TrueType <code>cmap</code> and no <code>/ToUnicode</code>.</li>
+        <li>Fixture with CFF glyph names and no <code>/ToUnicode</code>.</li>
+        <li>Fixture with <code>/CIDToGIDMap</code> and embedded TrueType table.</li>
+        <li>Negative fixture where embedded font data exists but PDF code to glyph ID is ambiguous; expected result is unmapped diagnostics.</li>
+      </ul>
+    </section>
+
+    <section id="phase-4">
+      <h2>Phase 4: OCR And Page-Text Fallback Exclusion</h2>
+      <p>OCR and external page-text fallback are intentionally excluded from this implementation.</p>
+
+      <h3>Implementation Steps</h3>
+      <ol>
+        <li>Do not add OCR modules, OCR provider traits, external tool execution, or page-text import paths.</li>
+        <li>Preserve current behavior for image-only or non-selectable text: emit the existing warning that OCR is not performed.</li>
+        <li>Keep all fallback work inside deterministic PDF semantics, embedded font tables, and conservative embedded glyph-shape evidence.</li>
+      </ol>
+
+      <h3>Acceptance Criteria</h3>
+      <ul>
+        <li>Default conversion remains deterministic and does not shell out.</li>
+        <li>No OCR-specific dependency, option, module, or provider is added.</li>
+        <li>Image-only text continues to produce the existing OCR-not-performed warning.</li>
+      </ul>
+
+      <h3>Tests</h3>
+      <ul>
+        <li>Existing OCR warning tests continue to pass.</li>
+        <li>No new fake OCR provider or image-only OCR fixture is added for this pass.</li>
+      </ul>
+    </section>
+
+    <section id="phase-5">
+      <h2>Phase 5: Glyph-Shape Decoding For Embedded Font Runs</h2>
+      <p>Files likely touched:</p>
+      <ul>
+        <li><code>src/pdf/fonts/shapes.rs</code></li>
+        <li><code>src/pdf/text/glyph_inference.rs</code></li>
+        <li><a href="../src/pdf/text/parser.rs"><code>src/pdf/text/parser.rs</code></a></li>
+        <li>Visual diagnostics in <code>src/pdf/visual</code>.</li>
+      </ul>
+
+      <h3>Implementation Steps</h3>
+      <ol>
+        <li>Capture unresolved text runs with font reference, raw bytes, glyph IDs if known, positions and advances, and page/run context.</li>
+        <li>Extract glyph outlines or normalized raster masks from embedded fonts.</li>
+        <li>Normalize shapes for scale, translation, winding, and minor hinting differences.</li>
+        <li>Build reference comparisons for common Latin glyphs first.</li>
+        <li>Solve mappings at run level, not one glyph at a time, using repeated glyph consistency, word-shape constraints, language score, nearby mapped text, and font width evidence.</li>
+        <li>Mark inferred text as low/medium/high confidence.</li>
+        <li>Gate semantic output on confidence. Low-confidence results should be exposed only in diagnostics or visual overlays.</li>
+      </ol>
+
+      <h3>Acceptance Criteria</h3>
+      <ul>
+        <li>A subset font with no <code>/ToUnicode</code>, no usable <code>/Encoding</code>, and embedded outlines can recover a small Latin phrase when the glyph shapes are clear.</li>
+        <li>Ambiguous shapes such as <code>I</code>, <code>l</code>, <code>1</code>, <code>O</code>, and <code>0</code> require context or remain unresolved.</li>
+        <li>Shape inference never runs before deterministic mapping sources.</li>
+      </ul>
+
+      <h3>Tests</h3>
+      <ul>
+        <li>Synthetic embedded subset font with remapped glyph codes for a known phrase.</li>
+        <li>Ambiguity test for <code>I/l/1</code> and <code>O/0</code>.</li>
+        <li>Regression test that real <code>/ToUnicode</code> output is not changed by shape inference.</li>
+      </ul>
+    </section>
+
+    <section id="phase-6">
+      <h2>Phase 6: Diagnostics And Quality Gates</h2>
+      <h3>Implementation Steps</h3>
+      <ol>
+        <li>Add unmapped-character counters per page and font.</li>
+        <li>Add warnings for unsupported encodings, unknown CID collections, missing font streams, ambiguous embedded font mappings, and OCR-disabled image text.</li>
+        <li>Add debug-only mapping traces for fixtures.</li>
+        <li>Keep post-decode shifted-subset repairs behind clear score gates.</li>
+        <li>Regenerate affected output fixtures after each phase.</li>
+      </ol>
+
+      <h3>Quality Gates After Each Phase</h3>
+      <ol>
+        <li>Run <code>cargo test</code>.</li>
+        <li>Run fixture conversion tests.</li>
+        <li>Compare representative PDFs visually and semantically.</li>
+        <li>Review warnings for accuracy.</li>
+        <li>Remove or narrow any heuristic that improves one fixture by damaging another.</li>
+      </ol>
+    </section>
+
+    <section id="work-order">
+      <h2>Suggested Work Order</h2>
+      <ol>
+        <li>Harden AGL and simple encoding coverage.</li>
+        <li>Add unmapped diagnostics.</li>
+        <li>Replace unsafe Type0 Identity behavior with known-collection handling.</li>
+        <li>Add embedded font extraction and table parsing.</li>
+        <li>Add glyph-shape inference as an experimental, diagnostic-heavy path.</li>
+        <li>Preserve OCR/page-text fallback as out of scope.</li>
+      </ol>
+    </section>
+
+    <section id="definition-of-done">
+      <h2>Definition Of Done</h2>
+      <p>
+        The feature set is complete only when the converter can demonstrate all
+        five capabilities with tests and diagnostics:
+      </p>
+      <ul>
+        <li>Simple-font <code>/Encoding</code> and <code>/Differences</code> fallback through AGL.</li>
+        <li>Known Type0/CID collection decoding.</li>
+        <li>Embedded font table recovery where deterministic.</li>
+        <li>OCR/page-text fallback explicitly excluded, with the existing warning preserved.</li>
+        <li>Glyph-shape decoding for embedded-font runs with confidence gates.</li>
+      </ul>
+      <p>
+        Until then, user-facing descriptions should say that only simple-font
+        fallback and limited Identity Type0 fallback are currently implemented.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

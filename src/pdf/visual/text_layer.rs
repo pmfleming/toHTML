@@ -1,8 +1,14 @@
+mod fill_sign;
+mod line_rules;
+
+pub(super) use fill_sign::{fill_sign_placeholder, render_fill_sign_line_cells};
+pub(super) use line_rules::{is_definition_prose_line, should_render_line_cells};
+
 use super::super::text::{TextLine, TextSegment};
 use super::render::{push_number, push_pt, push_text_color};
 use super::text_repair::repair_visual_text;
 use super::{
-    text_inference::{has_domain_like_text, normalized_rotation, split_inferred_two_column_label},
+    text_inference::{normalized_rotation, split_inferred_two_column_label},
     PageGeometry,
 };
 use crate::html::escape::push_attr_escaped;
@@ -150,151 +156,6 @@ fn render_positioned_text_span(
     html.push_str("</span>\n");
 }
 
-pub(super) fn should_render_line_cells(line: &TextLine) -> bool {
-    if has_email_address(&line.text) {
-        return true;
-    }
-    if is_inline_expression_line(line) {
-        return false;
-    }
-    if has_shifted_parenthetical_prose(line) {
-        return false;
-    }
-    if has_broken_hyphenated_prose(line) {
-        return false;
-    }
-    if has_dot_leader_page_number(&line.text) {
-        return true;
-    }
-    if is_bulleted_prose_line(line) {
-        return false;
-    }
-    if is_definition_prose_line(line) && !is_style_fragmented_prose_line(line) {
-        return false;
-    }
-    if has_wide_cell_gap(line) {
-        return true;
-    }
-    if is_style_fragmented_prose_line(line) {
-        return true;
-    }
-    if line.text.chars().count() > 70 {
-        return false;
-    }
-    if line.text.contains('©') {
-        return false;
-    }
-    false
-}
-
-pub(super) fn is_definition_prose_line(line: &TextLine) -> bool {
-    if !(7.0..=12.5).contains(&line.font_size)
-        || line.text.contains('=')
-        || line.text.contains('+')
-        || has_domain_like_text(&line.text)
-        || has_dot_leader_page_number(&line.text)
-    {
-        return false;
-    }
-    if !line.text.chars().any(char::is_lowercase) {
-        return false;
-    }
-
-    let alphabetic_words = line
-        .text
-        .split_whitespace()
-        .filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= 2)
-        .count();
-    line.text.chars().count() >= 42 && alphabetic_words >= 6
-}
-
-fn has_broken_hyphenated_prose(line: &TextLine) -> bool {
-    if line.text.contains('=')
-        || !(line.text.contains(" -wise")
-            || line.text.contains("- wise")
-            || line.text.contains("-wise")
-            || line.text.contains(" -down")
-            || line.text.contains("- down")
-            || line.text.contains("-down"))
-    {
-        return false;
-    }
-    line.text
-        .split_whitespace()
-        .filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= 3)
-        .count()
-        >= 3
-}
-
-fn is_bulleted_prose_line(line: &TextLine) -> bool {
-    let text = line.text.trim_start();
-    if !(text.starts_with("• ") || text.starts_with("o ")) {
-        return false;
-    }
-    text.split_whitespace()
-        .filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= 2)
-        .count()
-        >= 4
-        && text.chars().any(char::is_lowercase)
-}
-
-fn is_style_fragmented_prose_line(line: &TextLine) -> bool {
-    line.cells.len() >= 2
-        && line.font_size >= 11.0
-        && line.text.chars().any(char::is_lowercase)
-        && line
-            .text
-            .split_whitespace()
-            .filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= 2)
-            .count()
-            >= 6
-        && line
-            .cells
-            .windows(2)
-            .any(|cells| needs_inserted_word_gap(&cells[0], &cells[1]))
-}
-
-fn has_shifted_parenthetical_prose(line: &TextLine) -> bool {
-    if !line.text.contains(">&") || !line.text.contains(">'") || line.text.contains('=') {
-        return false;
-    }
-    line.text
-        .split_whitespace()
-        .filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= 3)
-        .count()
-        >= 3
-}
-
-fn has_dot_leader_page_number(text: &str) -> bool {
-    let trimmed = text.trim_end();
-    trimmed.contains("...")
-        && trimmed
-            .split_whitespace()
-            .last()
-            .is_some_and(|token| token.chars().all(|ch| ch.is_ascii_digit()))
-}
-
-fn has_wide_cell_gap(line: &TextLine) -> bool {
-    let column_gap = line.font_size.max(8.0) * 2.25;
-    line.cells.windows(2).any(|cells| {
-        let left_end = cells[0].x + cells[0].width.max(0.0);
-        cells[1].x - left_end >= column_gap
-    })
-}
-
-fn has_email_address(text: &str) -> bool {
-    text.split_whitespace().any(|word| {
-        let trimmed = word.trim_matches(|ch: char| {
-            matches!(ch, ',' | ';' | ':' | '<' | '>' | '(' | ')' | '[' | ']')
-        });
-        trimmed.contains('@') && trimmed.rsplit_once('.').is_some()
-    })
-}
-
-fn is_inline_expression_line(line: &TextLine) -> bool {
-    line.cells.len() <= 3 && line.text.chars().any(|ch| matches!(ch, '=' | '+'))
-}
-
 pub(super) fn render_line_cells(
     html: &mut String,
     line: &TextLine,
@@ -318,7 +179,7 @@ pub(super) fn render_line_cells(
     }
 }
 
-fn needs_inserted_word_gap(left: &TextSegment, right: &TextSegment) -> bool {
+pub(super) fn needs_inserted_word_gap(left: &TextSegment, right: &TextSegment) -> bool {
     let gap = right.x - (left.x + left.width.max(0.0));
     gap.abs() <= left.font_size.max(right.font_size) * 0.08
         && left
@@ -333,86 +194,6 @@ fn needs_inserted_word_gap(left: &TextSegment, right: &TextSegment) -> bool {
             .chars()
             .next()
             .is_some_and(|ch| ch.is_alphanumeric())
-}
-
-pub(super) fn render_fill_sign_line_cells(
-    html: &mut String,
-    line: &TextLine,
-    geometry: PageGeometry,
-    flowchart_page: bool,
-) {
-    for cell in &line.cells {
-        let text = without_fill_sign_placeholders(&cell.text);
-        if fill_sign_placeholder(&cell.text) {
-            render_placeholder_line(html, cell, geometry);
-        }
-        if !text.trim().is_empty() {
-            let mut segment = cell.clone();
-            segment.text = text.trim().to_string();
-            render_fragment(html, &segment, geometry, flowchart_page);
-        }
-    }
-}
-
-fn render_placeholder_line(html: &mut String, segment: &TextSegment, geometry: PageGeometry) {
-    let left = (segment.x - geometry.min_x).max(0.0);
-    let top = (geometry.height - segment.y + 1.0).max(0.0);
-    if left > geometry.width || top > geometry.height {
-        return;
-    }
-
-    html.push_str("      <div class=\"pdf-shape\" style=\"left:");
-    push_pt(html, left);
-    html.push_str(";top:");
-    push_pt(html, top);
-    html.push_str(";width:");
-    push_pt(
-        html,
-        segment
-            .width
-            .min(geometry.width - left)
-            .max(segment.font_size * 2.0),
-    );
-    html.push_str(";height:0.75pt;background:#000000\"></div>\n");
-}
-
-pub(super) fn fill_sign_placeholder(text: &str) -> bool {
-    let mut run = 0;
-    for ch in text.chars() {
-        if ch == 'B' {
-            run += 1;
-            if run >= 4 {
-                return true;
-            }
-        } else {
-            run = 0;
-        }
-    }
-    false
-}
-
-fn without_fill_sign_placeholders(text: &str) -> String {
-    let mut cleaned = String::new();
-    let mut run = String::new();
-    for ch in text.chars() {
-        if ch == 'B' {
-            run.push(ch);
-            continue;
-        }
-        flush_fill_sign_run(&mut cleaned, &mut run);
-        cleaned.push(ch);
-    }
-    flush_fill_sign_run(&mut cleaned, &mut run);
-    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn flush_fill_sign_run(cleaned: &mut String, run: &mut String) {
-    if run.len() < 4 {
-        cleaned.push_str(run);
-    } else if !cleaned.ends_with(' ') {
-        cleaned.push(' ');
-    }
-    run.clear();
 }
 
 pub(super) fn line_width(line: &TextLine) -> f32 {

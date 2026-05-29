@@ -27,7 +27,7 @@ pub fn pick_open_path() -> Option<PathBuf> {
 }
 
 pub fn autosave_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("html-editor").join("autosave.json"))
+    crate::paths::data_file("autosave.json")
 }
 
 pub fn save_autosave(doc: &Doc) {

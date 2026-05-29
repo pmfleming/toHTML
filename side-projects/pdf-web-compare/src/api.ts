@@ -9,6 +9,28 @@ export async function fetchLibrary(): Promise<LibraryResponse> {
   return (await response.json()) as LibraryResponse;
 }
 
+export async function updateInputFolder(inputDir: string): Promise<LibraryResponse> {
+  const response = await fetch("/api/input-folder", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ inputDir }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Input folder request failed: ${response.status}`);
+  }
+  return (await response.json()) as LibraryResponse;
+}
+
+export async function pickInputFolder(): Promise<LibraryResponse> {
+  const response = await fetch("/api/input-folder/pick", { method: "POST" });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Input folder picker failed: ${response.status}`);
+  }
+  return (await response.json()) as LibraryResponse;
+}
+
 export async function startRenderOutput(includeImages: boolean): Promise<RenderJob> {
   const response = await fetch("/api/render-output", {
     method: "POST",

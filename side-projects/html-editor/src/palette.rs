@@ -210,6 +210,7 @@ pub fn show(app: &mut App, ctx: &Context) {
 
     let accept_pressed = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     let mut table_accept: Option<(usize, usize)> = None;
+    let mut reveal_active = false;
 
     if is_table_grid {
         let left = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft));
@@ -240,9 +241,11 @@ pub fn show(app: &mut App, ctx: &Context) {
             } else {
                 app.palette.active -= 1;
             }
+            reveal_active = true;
         }
         if down && !app.palette.filtered.is_empty() {
             app.palette.active = (app.palette.active + 1) % app.palette.filtered.len();
+            reveal_active = true;
         }
     }
 
@@ -344,6 +347,9 @@ pub fn show(app: &mut App, ctx: &Context) {
                                 let item = &app.palette.items[idx];
                                 let selected = i == active;
                                 let resp = palette_row(ui, item, selected);
+                                if selected && reveal_active {
+                                    resp.scroll_to_me(None);
+                                }
                                 if resp.clicked() {
                                     mouse_accept_idx = Some(i);
                                 }

@@ -1,4 +1,5 @@
 mod cmap;
+mod compression;
 mod fonts;
 mod form;
 mod graphics;
@@ -48,9 +49,11 @@ pub fn pdf_to_document_with_options(
 ) -> Result<Document, ConvertError> {
     let extraction = streams::document_pages(bytes)?;
     let font_cmaps = cmap::font_cmaps(bytes)?;
+    let font_warnings = cmap::font_decoding_warnings(bytes)?;
     let font_metrics = fonts::font_metrics(bytes);
     let objects = PdfObjects::parse(bytes);
     let struct_roles = struct_tree::role_map(&objects);
+    let struct_actual_text = struct_tree::actual_text_map(&objects);
     let mut document = Document::new();
     document.metadata.source_format = Some(SourceFormat::Pdf);
     document.metadata.title = metadata::document_title(&objects);
@@ -64,6 +67,12 @@ pub fn pdf_to_document_with_options(
                 source: None,
             }),
     );
+    document
+        .warnings
+        .extend(font_warnings.into_iter().map(|message| ConversionWarning {
+            message,
+            source: None,
+        }));
 
     let total_pages = extraction.pages.len();
     let mut visual_pages = Vec::new();
@@ -136,12 +145,24 @@ pub fn pdf_to_document_with_options(
 
         let combined_stream = combined_page_stream(&page.streams);
         if !combined_stream.is_empty() {
-            page_segments = text::extract_segments_with_fonts(
+            let (segments, decode_stats) = text::extract_segments_with_context_and_stats(
                 &combined_stream,
                 &page_font_cmaps,
                 &page_font_metrics,
                 &struct_roles,
+                &struct_actual_text,
+                Some(page.reference),
             );
+            page_segments = segments;
+            if decode_stats.notdef > 0 || decode_stats.raw_fallback > 0 {
+                document.warnings.push(ConversionWarning {
+                    message: format!(
+                        "Page {} has uncertain PDF text decoding: {} unmapped code(s), {} .notdef code(s)",
+                        page.page_number, decode_stats.raw_fallback, decode_stats.notdef
+                    ),
+                    source: None,
+                });
+            }
             page_segments.extend(form::form_xobject_text_segments(
                 &objects,
                 &page.image_resources,
@@ -149,6 +170,8 @@ pub fn pdf_to_document_with_options(
                 &page_font_cmaps,
                 &page_font_metrics,
                 &struct_roles,
+                &struct_actual_text,
+                Some(page.reference),
             ));
             text::repair_segment_text(&mut page_segments);
             repair::restore_centered_page_number_markers(

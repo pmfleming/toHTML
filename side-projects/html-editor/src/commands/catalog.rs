@@ -188,6 +188,12 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         group: "view",
+        name: "Toggle tag markers",
+        hint: "on/off",
+        run: super::cmd_toggle_tags,
+    },
+    Command {
+        group: "view",
         name: "Help / shortcuts",
         hint: "Ctrl+/",
         run: super::cmd_help,

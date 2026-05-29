@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use super::super::fonts::FontMetrics;
+use super::super::object::PdfReference;
+use super::super::struct_tree::{McidMap, McidScope};
 use super::lines::estimated_text_width;
 use super::operands::DecodedText;
 use super::state::TextState;
@@ -14,13 +16,17 @@ pub(super) struct SegmentEmitter<'a> {
     marked_roles: Vec<String>,
     actual_text_stack: Vec<Option<DecodedText>>,
     font_metrics: &'a HashMap<String, FontMetrics>,
-    struct_roles: &'a HashMap<u32, String>,
+    struct_roles: &'a McidMap<String>,
+    struct_actual_text: &'a McidMap<String>,
+    page_reference: Option<PdfReference>,
 }
 
 impl<'a> SegmentEmitter<'a> {
     pub(super) fn new(
         font_metrics: &'a HashMap<String, FontMetrics>,
-        struct_roles: &'a HashMap<u32, String>,
+        struct_roles: &'a McidMap<String>,
+        struct_actual_text: &'a McidMap<String>,
+        page_reference: Option<PdfReference>,
     ) -> Self {
         Self {
             segments: Vec::new(),
@@ -30,6 +36,8 @@ impl<'a> SegmentEmitter<'a> {
             actual_text_stack: Vec::new(),
             font_metrics,
             struct_roles,
+            struct_actual_text,
+            page_reference,
         }
     }
 
@@ -178,7 +186,14 @@ impl<'a> SegmentEmitter<'a> {
     }
 
     pub(super) fn struct_role(&self, mcid: u32) -> Option<String> {
-        self.struct_roles.get(&mcid).cloned()
+        scoped_lookup(self.struct_roles, self.page_reference, mcid).cloned()
+    }
+
+    pub(super) fn struct_actual_text(&self, mcid: u32) -> Option<DecodedText> {
+        scoped_lookup(self.struct_actual_text, self.page_reference, mcid).map(|text| DecodedText {
+            text: text.clone(),
+            raw: Vec::new(),
+        })
     }
 
     fn current_metrics(&self) -> Option<&FontMetrics> {
@@ -193,4 +208,14 @@ impl<'a> SegmentEmitter<'a> {
     fn current_actual_text(&self) -> Option<DecodedText> {
         self.actual_text_stack.last().cloned().flatten()
     }
+}
+
+fn scoped_lookup<T>(
+    map: &McidMap<T>,
+    page_reference: Option<PdfReference>,
+    mcid: u32,
+) -> Option<&T> {
+    page_reference
+        .and_then(|page| map.get(&McidScope::new(Some(page), mcid)))
+        .or_else(|| map.get(&McidScope::unscoped(mcid)))
 }

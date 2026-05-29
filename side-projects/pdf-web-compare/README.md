@@ -70,6 +70,11 @@ Typical workflow:
 4. Start reviewing immediately while background generation runs.
 5. Page through the matched PDF/HTML pairs as generated files appear.
 
+Use the `Input` folder field in the toolbar to compare a different source
+folder. Enter a path and click `Apply`, or click `Choose` to open a native
+folder picker on Windows. Relative paths are resolved from the main `toHTML`
+project root. The `Output` folder stays fixed at `C:\Code\toHTML\output`.
+
 On load, the app scans every PDF in the main `input` folder, regenerates matching
 HTML into the main `output` folder, and shows progress without blocking the
 viewer. This intentionally does not skip existing output because `toHTML` may be

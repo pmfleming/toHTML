@@ -61,7 +61,9 @@ pub(super) fn form_xobject_text_segments(
     content_streams: &[Vec<u8>],
     font_cmaps: &std::collections::HashMap<String, cmap::CMap>,
     font_metrics: &std::collections::HashMap<String, fonts::FontMetrics>,
-    struct_roles: &std::collections::HashMap<u32, String>,
+    struct_roles: &super::struct_tree::McidMap<String>,
+    struct_actual_text: &super::struct_tree::McidMap<String>,
+    page_reference: Option<object::PdfReference>,
 ) -> Vec<text::TextSegment> {
     let mut visited = std::collections::HashSet::new();
     let mut segments = Vec::new();
@@ -74,6 +76,8 @@ pub(super) fn form_xobject_text_segments(
             font_cmaps,
             font_metrics,
             struct_roles,
+            struct_actual_text,
+            page_reference,
             &mut visited,
             &mut segments,
         );
@@ -88,7 +92,9 @@ fn collect_content_form_text_segments(
     initial_ctm: FormMatrix,
     font_cmaps: &std::collections::HashMap<String, cmap::CMap>,
     font_metrics: &std::collections::HashMap<String, fonts::FontMetrics>,
-    struct_roles: &std::collections::HashMap<u32, String>,
+    struct_roles: &super::struct_tree::McidMap<String>,
+    struct_actual_text: &super::struct_tree::McidMap<String>,
+    page_reference: Option<object::PdfReference>,
     visited: &mut std::collections::HashSet<object::PdfReference>,
     segments: &mut Vec<text::TextSegment>,
 ) {
@@ -100,6 +106,8 @@ fn collect_content_form_text_segments(
             font_cmaps,
             font_metrics,
             struct_roles,
+            struct_actual_text,
+            page_reference,
             visited,
             segments,
         );
@@ -112,7 +120,9 @@ fn collect_form_xobject_text_segments(
     parent_matrix: FormMatrix,
     font_cmaps: &std::collections::HashMap<String, cmap::CMap>,
     font_metrics: &std::collections::HashMap<String, fonts::FontMetrics>,
-    struct_roles: &std::collections::HashMap<u32, String>,
+    struct_roles: &super::struct_tree::McidMap<String>,
+    struct_actual_text: &super::struct_tree::McidMap<String>,
+    page_reference: Option<object::PdfReference>,
     visited: &mut std::collections::HashSet<object::PdfReference>,
     segments: &mut Vec<text::TextSegment>,
 ) {
@@ -142,9 +152,16 @@ fn collect_form_xobject_text_segments(
         .and_then(|stream| streams::decoded_stream_data(dictionary, stream).ok())
     {
         segments.extend(
-            text::extract_segments_with_fonts(&stream, font_cmaps, font_metrics, struct_roles)
-                .into_iter()
-                .map(|segment| transform_form_segment(segment, matrix)),
+            text::extract_segments_with_context(
+                &stream,
+                font_cmaps,
+                font_metrics,
+                struct_roles,
+                struct_actual_text,
+                page_reference,
+            )
+            .into_iter()
+            .map(|segment| transform_form_segment(segment, matrix)),
         );
         collect_content_form_text_segments(
             objects,
@@ -154,6 +171,8 @@ fn collect_form_xobject_text_segments(
             font_cmaps,
             font_metrics,
             struct_roles,
+            struct_actual_text,
+            page_reference,
             visited,
             segments,
         );

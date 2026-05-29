@@ -98,6 +98,32 @@ endobj
 }
 
 #[test]
+fn warns_when_page_text_uses_unmapped_multibyte_codes() {
+    let pdf = br#"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj
+4 0 obj << /Length 37 >>
+stream
+BT /F1 12 Tf 72 720 Td <0041> Tj ET
+endstream
+endobj
+5 0 obj << /Type /Font /Subtype /Type0 /ToUnicode 6 0 R >> endobj
+6 0 obj << /Length 180 >>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Empty def 1 begincodespacerange <0000> <FFFF> endcodespacerange endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+%%EOF"#;
+
+    let document = pdf_to_document(pdf).unwrap();
+
+    assert!(document.warnings.iter().any(|warning| warning
+        .message
+        .contains("Page 1 has uncertain PDF text decoding: 1 unmapped code(s)")));
+}
+
+#[test]
 fn creates_placeholder_for_non_extractable_pdf() {
     let pdf = br#"%PDF-1.4
 1 0 obj << /Type /Page >> endobj
@@ -397,7 +423,7 @@ trailer << /Encrypt 4 0 R >>
 fn reports_unsupported_content_stream_filter_as_page_warning() {
     let pdf = br#"%PDF-1.4
 1 0 obj << /Type /Page /Contents 2 0 R >> endobj
-2 0 obj << /Length 4 /Filter /LZWDecode >>
+2 0 obj << /Length 4 /Filter /UnsupportedDecode >>
 stream
 abcd
 endstream
@@ -409,7 +435,7 @@ endobj
     assert!(document.warnings.iter().any(|warning| {
         warning
             .message
-            .contains("Page 1: unsupported PDF stream filter LZWDecode")
+            .contains("Page 1: unsupported PDF stream filter UnsupportedDecode")
     }));
     assert!(document
         .blocks

@@ -9,7 +9,7 @@ simple ToUnicode and heuristic repairs. The target behavior is:
   fonts
 - Type0/CID mapping through known CMap collections
 - embedded font table use when available
-- external OCR or page-text fallback only for truly unmapped visual text
+- no external OCR or page-text fallback in this implementation
 - glyph-shape decoding for embedded-font text runs when semantic mappings fail
 
 ## Current State
@@ -32,7 +32,7 @@ Not implemented yet:
 - known CID collection mappings such as Adobe-Japan1, Adobe-CNS1, Adobe-GB1,
   and Adobe-Korea1
 - embedded TrueType/OpenType/CFF/Type1 table parsing for Unicode recovery
-- OCR/page-text fallback
+- OCR/page-text fallback remains explicitly out of scope
 - glyph outline or raster shape decoding
 
 ## Principles
@@ -41,7 +41,7 @@ Not implemented yet:
 2. Treat `/ToUnicode` as authoritative when present.
 3. Use fallback mappings only for missing character codes, not to override
    explicit semantic mappings.
-4. Keep OCR and glyph-shape inference opt-in or clearly labeled until confidence
+4. Keep glyph-shape inference conservative and clearly labeled until confidence
    gates are strong enough.
 5. Emit diagnostics when text remains unmapped instead of silently returning raw
    private glyph codes.
@@ -162,44 +162,30 @@ Tests:
 - Negative fixture where embedded font data exists but PDF code to glyph ID is
   ambiguous; expected result is unmapped diagnostics.
 
-## Phase 4: External OCR And Page-Text Fallback
+## Phase 4: OCR And Page-Text Fallback Exclusion
 
-Files likely touched:
-
-- `src/pdf/mod.rs`
-- new `src/pdf/ocr.rs`
-- CLI options in `src/main.rs` or `src/cli.rs`
-- tests around warnings and placeholders
+OCR and external page-text fallback are intentionally excluded from this
+implementation.
 
 Implementation steps:
 
-1. Add an explicit conversion option for OCR or external page-text fallback.
-2. Define an adapter trait for external tools so tests can use a fake provider.
-3. Support page-level fallback for image-only pages.
-4. Support region-level fallback for visual text runs whose font mapping remains
-   unmapped after Phases 1-3.
-5. Align OCR text by page and bounding box before merging it into output.
-6. Require confidence thresholds and overlap checks to avoid duplicating
-   selectable text.
-7. Preserve current behavior when OCR is disabled: warn that OCR is not
-   performed.
+1. Do not add OCR modules, OCR provider traits, external tool execution, or
+   page-text import paths.
+2. Preserve current behavior for image-only or non-selectable text: emit the
+   existing warning that OCR is not performed.
+3. Keep all fallback work inside deterministic PDF semantics, embedded font
+   tables, and conservative embedded glyph-shape evidence.
 
 Acceptance criteria:
 
 - Default conversion remains deterministic and does not shell out.
-- With OCR enabled, image-only pages can produce text blocks with source
-  metadata indicating OCR.
-- OCR text does not duplicate existing selectable text.
-- Low-confidence OCR remains a warning or placeholder.
+- No OCR-specific dependency, option, module, or provider is added.
+- Image-only text continues to produce the existing OCR-not-performed warning.
 
 Tests:
 
-- Unit tests with a fake OCR provider.
-- Fixture for image-only page with fake OCR text.
-- Fixture where selectable text and OCR overlap; expected result has no
-  duplicate paragraph.
-- Fixture where OCR confidence is too low; expected result remains placeholder
-  plus warning.
+- Existing OCR warning tests continue to pass.
+- No new fake OCR provider or image-only OCR fixture is added for this pass.
 
 ## Phase 5: Glyph-Shape Decoding For Embedded Font Runs
 
@@ -272,8 +258,8 @@ Quality gates after each phase:
 2. Add unmapped diagnostics.
 3. Replace unsafe Type0 Identity behavior with known-collection handling.
 4. Add embedded font extraction and table parsing.
-5. Add opt-in external OCR adapter.
-6. Add glyph-shape inference as an experimental, diagnostic-heavy path.
+5. Add glyph-shape inference as an experimental, diagnostic-heavy path.
+6. Preserve OCR/page-text fallback as out of scope.
 
 ## Definition Of Done
 
@@ -283,7 +269,7 @@ capabilities with tests and diagnostics:
 - simple-font `/Encoding` and `/Differences` fallback through AGL
 - known Type0/CID collection decoding
 - embedded font table recovery where deterministic
-- OCR/page-text fallback for genuinely unmapped visual text
+- OCR/page-text fallback explicitly excluded, with the existing warning preserved
 - glyph-shape decoding for embedded-font runs with confidence gates
 
 Until then, user-facing descriptions should say that only simple-font fallback

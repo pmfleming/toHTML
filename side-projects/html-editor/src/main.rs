@@ -2,12 +2,14 @@ mod commands;
 mod doc;
 mod files;
 mod palette;
+mod paths;
 #[path = "../../rich_text/mod.rs"]
 mod rich_text;
 mod serialize;
 mod settings;
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use doc::{Caret, Doc, InlineStyle};
 use eframe::egui;
@@ -28,6 +30,8 @@ pub struct App {
     pub show_help: bool,
     pub queue_visuals: bool,
     pub editor_has_focus: bool,
+    autosave_pending: bool,
+    last_autosave_request: Option<Instant>,
 }
 
 impl App {
@@ -53,6 +57,8 @@ impl App {
             show_help: false,
             queue_visuals: false,
             editor_has_focus: true,
+            autosave_pending: false,
+            last_autosave_request: None,
         }
     }
 
@@ -62,10 +68,22 @@ impl App {
         if self.history.len() > 200 {
             self.history.remove(0);
         }
+        self.schedule_autosave();
     }
 
     pub fn undo_history_only(&mut self) {
         self.history.pop();
+    }
+
+    pub fn commit_edit(&mut self, edit: impl FnOnce(&mut Self) -> bool) -> bool {
+        self.push_history();
+        if edit(self) {
+            self.dirty = true;
+            true
+        } else {
+            self.undo_history_only();
+            false
+        }
     }
 
     pub fn undo(&mut self) {
@@ -75,6 +93,7 @@ impl App {
             self.doc.clamp_caret(&mut self.caret);
             self.clear_selection();
             self.dirty = true;
+            self.schedule_autosave();
         }
     }
 
@@ -85,6 +104,7 @@ impl App {
             self.doc.clamp_caret(&mut self.caret);
             self.clear_selection();
             self.dirty = true;
+            self.schedule_autosave();
         }
     }
 
@@ -120,7 +140,6 @@ impl App {
         runs.drain(start.char..end.char);
         self.caret = start;
         self.clear_selection();
-        self.dirty = true;
         true
     }
 
@@ -138,6 +157,31 @@ impl App {
         }
     }
 
+    fn schedule_autosave(&mut self) {
+        self.autosave_pending = true;
+        self.last_autosave_request = Some(Instant::now());
+    }
+
+    fn flush_autosave(&mut self, ctx: &egui::Context) {
+        if !self.autosave_pending {
+            return;
+        }
+
+        let delay = Duration::from_millis(750);
+        let elapsed = self
+            .last_autosave_request
+            .map(|request| request.elapsed())
+            .unwrap_or(delay);
+
+        if elapsed < delay {
+            ctx.request_repaint_after(delay - elapsed);
+            return;
+        }
+
+        files::save_autosave(&self.doc);
+        self.autosave_pending = false;
+    }
+
     fn show_help(&mut self, ctx: &egui::Context) {
         let mut open = self.show_help;
         egui::Window::new("Shortcuts")
@@ -147,9 +191,40 @@ impl App {
                 ui.label("Ctrl+T opens the filtering command palette.");
                 ui.label("< opens the filtering HTML tag palette.");
                 ui.label("Enter splits the current block. Backspace joins at the start of a block.");
+                ui.label("Use Toggle tag markers from the palette to show or hide inline HTML tags.");
                 ui.label("All file, style, theme, table, and tag commands are available from the palette.");
         });
         self.show_help = open;
+    }
+
+    fn show_status_bar(&self, ui: &mut egui::Ui) {
+        let tag_stack = self.doc.tag_stack(&self.caret);
+        let tag_markers = if self.settings.show_tags { "on" } else { "off" };
+
+        egui::Frame::NONE
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(egui::Margin::symmetric(12, 4))
+            .show(ui, |ui| {
+                ui.set_min_height(22.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(egui_phosphor::regular::FILE_HTML)
+                            .size(16.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.label(
+                        egui::RichText::new(tag_stack)
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!("Tag markers {tag_markers}"))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                });
+            });
     }
 }
 
@@ -172,15 +247,26 @@ impl eframe::App for App {
             rich_text::handle_input(self, &ctx);
         }
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            let available = ui.available_width();
-            let page_width = self.settings.max_width.min(available).max(320.0);
-            ui.vertical_centered(|ui| {
-                ui.set_width(page_width);
-                ui.add_space(self.settings.page_margin);
-                rich_text::show(self, ui);
-                ui.add_space(self.settings.page_margin);
+        egui::Panel::bottom("status_bar")
+            .exact_size(30.0)
+            .show_inside(ui, |ui| {
+                self.show_status_bar(ui);
             });
+
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("document_scroll")
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    let available = ui.available_width();
+                    let page_width = self.settings.max_width.min(available).max(320.0);
+                    ui.vertical_centered(|ui| {
+                        ui.set_width(page_width);
+                        ui.add_space(self.settings.page_margin);
+                        rich_text::show(self, ui);
+                        ui.add_space(self.settings.page_margin);
+                    });
+                });
         });
 
         if self.show_help {
@@ -199,7 +285,7 @@ impl eframe::App for App {
                 });
         }
 
-        files::save_autosave(&self.doc);
+        self.flush_autosave(&ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
             "HTML Editor - {}",
             self.title()

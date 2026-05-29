@@ -4,8 +4,10 @@ use crate::ConvertError;
 
 use super::object::{PdfDictionaryExt, PdfObjects, PdfReference, PdfValue};
 
+mod annotations;
 mod filters;
 mod legacy;
+mod resources;
 #[cfg(test)]
 mod tests;
 
@@ -22,6 +24,7 @@ pub struct PdfPageExtraction {
 
 #[derive(Debug, Clone, Default)]
 pub struct PageContent {
+    pub reference: PdfReference,
     pub page_number: u32,
     pub streams: Vec<Vec<u8>>,
     pub warnings: Vec<String>,
@@ -126,6 +129,7 @@ fn page_content(
         .or_else(|| objects.latest(reference.object))
     else {
         return Ok(PageContent {
+            reference,
             page_number,
             ..PageContent::default()
         });
@@ -133,25 +137,25 @@ fn page_content(
     let page_dictionary = page.dictionary();
     let (width, height) = page
         .dictionary()
-        .and_then(media_box_size)
+        .and_then(resources::media_box_size)
         .unwrap_or((None, None));
     let image_resources = page
         .dictionary()
-        .map(|dictionary| page_image_resources(objects, dictionary))
+        .map(|dictionary| resources::page_image_resources(objects, dictionary))
         .unwrap_or_default();
     let font_resources = page
         .dictionary()
-        .map(|dictionary| page_font_resources(objects, dictionary))
+        .map(|dictionary| resources::page_font_resources(objects, dictionary))
         .unwrap_or_default();
     let shading_resources = page
         .dictionary()
-        .map(|dictionary| page_shading_resources(objects, dictionary))
+        .map(|dictionary| resources::page_shading_resources(objects, dictionary))
         .unwrap_or_default();
     let ink_annotations = page_dictionary
-        .map(|dictionary| page_ink_annotations(objects, dictionary))
+        .map(|dictionary| annotations::page_ink_annotations(objects, dictionary))
         .unwrap_or_default();
     let link_annotations = page_dictionary
-        .map(|dictionary| page_link_annotations(objects, dictionary))
+        .map(|dictionary| annotations::page_link_annotations(objects, dictionary))
         .unwrap_or_default();
     let content_refs = page
         .dictionary()
@@ -174,6 +178,7 @@ fn page_content(
     }
     Ok(PageContent {
         page_number,
+        reference,
         streams,
         warnings,
         width,
@@ -186,136 +191,11 @@ fn page_content(
     })
 }
 
-fn page_link_annotations(
-    objects: &PdfObjects,
-    page: &super::object::PdfDictionary,
-) -> Vec<LinkAnnotation> {
-    page.array("Annots")
-        .into_iter()
-        .flatten()
-        .filter_map(|value| annotation_dictionary(objects, value))
-        .filter(|dictionary| dictionary.name("Subtype") == Some("Link"))
-        .filter_map(link_annotation)
-        .collect()
-}
-
-fn page_ink_annotations(
-    objects: &PdfObjects,
-    page: &super::object::PdfDictionary,
-) -> Vec<InkAnnotation> {
-    page.array("Annots")
-        .into_iter()
-        .flatten()
-        .filter_map(|value| annotation_dictionary(objects, value))
-        .filter(|dictionary| dictionary.name("Subtype") == Some("Ink"))
-        .filter_map(ink_annotation)
-        .collect()
-}
-
-fn annotation_dictionary<'a>(
-    objects: &'a PdfObjects,
-    value: &'a PdfValue,
-) -> Option<&'a super::object::PdfDictionary> {
-    match value {
-        PdfValue::Dictionary(dictionary) => Some(dictionary),
-        PdfValue::Reference(reference) => objects
-            .get(*reference)
-            .or_else(|| objects.latest(reference.object))
-            .and_then(|object| object.dictionary()),
-        _ => None,
-    }
-}
-
-fn ink_annotation(dictionary: &super::object::PdfDictionary) -> Option<InkAnnotation> {
-    let paths = dictionary
-        .array("InkList")?
-        .iter()
-        .filter_map(ink_path)
-        .collect::<Vec<_>>();
-    (!paths.is_empty()).then(|| InkAnnotation {
-        paths,
-        color: annotation_color(dictionary),
-        width: annotation_stroke_width(dictionary).unwrap_or(1.5),
-    })
-}
-
-fn link_annotation(dictionary: &super::object::PdfDictionary) -> Option<LinkAnnotation> {
-    Some(LinkAnnotation {
-        uri: link_action_uri(dictionary)?,
-        rect: annotation_rect(dictionary)?,
-    })
-}
-
-fn link_action_uri(dictionary: &super::object::PdfDictionary) -> Option<String> {
-    let action = match dictionary.get("A")? {
-        PdfValue::Dictionary(values) => values,
-        _ => return None,
-    };
-    let uri = action.string_bytes("URI")?;
-    let uri = String::from_utf8_lossy(uri).to_string();
-    is_plausible_link_uri(&uri).then_some(uri)
-}
-
-fn annotation_rect(dictionary: &super::object::PdfDictionary) -> Option<(f32, f32, f32, f32)> {
-    let values = dictionary.array("Rect")?;
-    let [x1, y1, x2, y2] = values else {
-        return None;
-    };
-    let x1 = pdf_number(x1)?;
-    let y1 = pdf_number(y1)?;
-    let x2 = pdf_number(x2)?;
-    let y2 = pdf_number(y2)?;
-    Some((x1.min(x2), y1.min(y2), (x1 - x2).abs(), (y1 - y2).abs()))
-}
-
-fn is_plausible_link_uri(uri: &str) -> bool {
-    let lower = uri.to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        value if value.starts_with("http://")
-            || value.starts_with("https://")
-            || value.starts_with("mailto:")
-            || value.starts_with("www.")
-    ) && !uri.chars().any(|ch| ch.is_control())
-}
-
-fn ink_path(value: &PdfValue) -> Option<Vec<(f32, f32)>> {
-    let PdfValue::Array(values) = value else {
-        return None;
-    };
-    let numbers = values.iter().filter_map(pdf_number).collect::<Vec<_>>();
-    let points = numbers
-        .chunks_exact(2)
-        .map(|pair| (pair[0], pair[1]))
-        .collect::<Vec<_>>();
-    (points.len() >= 2).then_some(points)
-}
-
-fn annotation_color(dictionary: &super::object::PdfDictionary) -> Option<String> {
-    let values = dictionary.array("C")?;
-    let [red, green, blue] = values else {
-        return None;
-    };
-    Some(rgb_color(
-        pdf_number(red)?,
-        pdf_number(green)?,
-        pdf_number(blue)?,
-    ))
-}
-
-fn annotation_stroke_width(dictionary: &super::object::PdfDictionary) -> Option<f32> {
-    let border_style = match dictionary.get("BS")? {
-        PdfValue::Dictionary(values) => values,
-        _ => return None,
-    };
-    positive_number(border_style.get("W")?)
-}
-
-fn positive_number(value: &PdfValue) -> Option<f32> {
+pub(super) fn positive_number(value: &PdfValue) -> Option<f32> {
     pdf_number(value).filter(|value| value.is_finite() && *value > 0.0)
 }
 
-fn rgb_color(red: f32, green: f32, blue: f32) -> String {
+pub(super) fn rgb_color(red: f32, green: f32, blue: f32) -> String {
     format!(
         "#{:02x}{:02x}{:02x}",
         color_channel(red),
@@ -328,191 +208,7 @@ fn color_channel(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-fn page_image_resources(
-    objects: &PdfObjects,
-    page: &super::object::PdfDictionary,
-) -> HashMap<String, PdfReference> {
-    let Some(resources) = inherited_resource_dictionary(objects, page) else {
-        return HashMap::new();
-    };
-    let Some(xobjects) = dictionary_value(objects, resources.get("XObject")) else {
-        return HashMap::new();
-    };
-
-    xobjects
-        .iter()
-        .filter_map(|(name, value)| match value {
-            PdfValue::Reference(reference) => Some((name.clone(), *reference)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn page_font_resources(
-    objects: &PdfObjects,
-    page: &super::object::PdfDictionary,
-) -> HashMap<String, PdfReference> {
-    let Some(resources) = inherited_resource_dictionary(objects, page) else {
-        return HashMap::new();
-    };
-    let Some(fonts) = dictionary_value(objects, resources.get("Font")) else {
-        return HashMap::new();
-    };
-
-    fonts
-        .iter()
-        .filter_map(|(name, value)| match value {
-            PdfValue::Reference(reference) => Some((name.clone(), *reference)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn page_shading_resources(
-    objects: &PdfObjects,
-    page: &super::object::PdfDictionary,
-) -> HashMap<String, String> {
-    let Some(resources) = inherited_resource_dictionary(objects, page) else {
-        return HashMap::new();
-    };
-    let Some(shadings) = dictionary_value(objects, resources.get("Shading")) else {
-        return HashMap::new();
-    };
-
-    shadings
-        .iter()
-        .filter_map(|(name, value)| Some((name.clone(), shading_color(objects, value)?)))
-        .collect()
-}
-
-fn shading_color(objects: &PdfObjects, value: &PdfValue) -> Option<String> {
-    let shading = dictionary_value(objects, Some(value))?;
-    let channels = color_space_channels(shading.get("ColorSpace")?)?;
-    function_color(objects, shading.get("Function")?, channels)
-}
-
-fn color_space_channels(value: &PdfValue) -> Option<usize> {
-    match value {
-        PdfValue::Name(name) if name == "DeviceRGB" => Some(3),
-        PdfValue::Name(name) if name == "DeviceGray" => Some(1),
-        PdfValue::Array(values) => values.first().and_then(color_space_channels),
-        _ => None,
-    }
-}
-
-fn function_color(objects: &PdfObjects, value: &PdfValue, channels: usize) -> Option<String> {
-    match value {
-        PdfValue::Dictionary(dictionary) => {
-            function_dictionary_color(objects, dictionary, channels)
-        }
-        PdfValue::Reference(reference) => objects
-            .get(*reference)
-            .or_else(|| objects.latest(reference.object))
-            .and_then(|object| object.dictionary())
-            .and_then(|dictionary| function_dictionary_color(objects, dictionary, channels)),
-        PdfValue::Array(values) => values
-            .iter()
-            .rev()
-            .find_map(|value| function_color(objects, value, channels)),
-        _ => None,
-    }
-}
-
-fn function_dictionary_color(
-    objects: &PdfObjects,
-    dictionary: &super::object::PdfDictionary,
-    channels: usize,
-) -> Option<String> {
-    match dictionary.integer("FunctionType")? {
-        2 => dictionary
-            .array("C1")
-            .or_else(|| dictionary.array("C0"))
-            .and_then(|values| color_from_array(values, channels)),
-        3 => dictionary
-            .array("Functions")?
-            .iter()
-            .rev()
-            .find_map(|value| function_color(objects, value, channels)),
-        _ => None,
-    }
-}
-
-fn color_from_array(values: &[PdfValue], channels: usize) -> Option<String> {
-    match channels {
-        1 => Some(gray_color(pdf_number(values.first()?)?)),
-        3 => {
-            let [red, green, blue, ..] = values else {
-                return None;
-            };
-            Some(rgb_color(
-                pdf_number(red)?,
-                pdf_number(green)?,
-                pdf_number(blue)?,
-            ))
-        }
-        _ => None,
-    }
-}
-
-fn gray_color(value: f32) -> String {
-    let channel = color_channel(value);
-    format!("#{channel:02x}{channel:02x}{channel:02x}")
-}
-
-fn inherited_resource_dictionary<'a>(
-    objects: &'a PdfObjects,
-    page: &'a super::object::PdfDictionary,
-) -> Option<&'a super::object::PdfDictionary> {
-    if let Some(resources) = dictionary_value(objects, page.get("Resources")) {
-        return Some(resources);
-    }
-
-    let mut parent = page.get_ref("Parent");
-    while let Some(reference) = parent {
-        let dictionary = objects
-            .get(reference)
-            .or_else(|| objects.latest(reference.object))
-            .and_then(|object| object.dictionary())?;
-        if let Some(resources) = dictionary_value(objects, dictionary.get("Resources")) {
-            return Some(resources);
-        }
-        parent = dictionary.get_ref("Parent");
-    }
-    None
-}
-
-fn dictionary_value<'a>(
-    objects: &'a PdfObjects,
-    value: Option<&'a PdfValue>,
-) -> Option<&'a super::object::PdfDictionary> {
-    match value? {
-        PdfValue::Dictionary(dictionary) => Some(dictionary),
-        PdfValue::Reference(reference) => objects
-            .get(*reference)
-            .or_else(|| objects.latest(reference.object))
-            .and_then(|object| object.dictionary()),
-        _ => None,
-    }
-}
-
-fn media_box_size(dictionary: &super::object::PdfDictionary) -> Option<(Option<f32>, Option<f32>)> {
-    let box_values = dictionary.array("MediaBox")?;
-    let [left, bottom, right, top] = box_values else {
-        return None;
-    };
-    let width = pdf_number(right)? - pdf_number(left)?;
-    let height = pdf_number(top)? - pdf_number(bottom)?;
-    Some((positive_dimension(width), positive_dimension(height)))
-}
-
-fn positive_dimension(value: f32) -> Option<f32> {
-    value
-        .is_finite()
-        .then_some(value.abs())
-        .filter(|value| *value > 0.0)
-}
-
-fn pdf_number(value: &PdfValue) -> Option<f32> {
+pub(super) fn pdf_number(value: &PdfValue) -> Option<f32> {
     match value {
         PdfValue::Integer(value) => Some(*value as f32),
         PdfValue::Real(value) => Some(*value),
@@ -528,7 +224,7 @@ fn content_references(value: &PdfValue) -> Vec<PdfReference> {
     }
 }
 
-fn stream_data_for_reference(
+pub(super) fn stream_data_for_reference(
     source: &[u8],
     objects: &PdfObjects,
     reference: PdfReference,
@@ -542,18 +238,17 @@ fn stream_data_for_reference(
     let Some(data) = &object.stream else {
         return Ok(None);
     };
-    let filters = object
-        .dictionary()
-        .map(filters::stream_filters)
-        .unwrap_or_default();
-    Ok(Some(filters::decode_filters(&filters, data)?))
+    let Some(dictionary) = object.dictionary() else {
+        return Ok(Some(data.clone()));
+    };
+    Ok(Some(filters::decode_stream(dictionary, data)?))
 }
 
 pub(super) fn decoded_stream_data(
     dictionary: &super::object::PdfDictionary,
     data: &[u8],
 ) -> Result<Vec<u8>, ConvertError> {
-    filters::decode_filters(&filters::stream_filters(dictionary), data)
+    filters::decode_stream(dictionary, data)
 }
 
 pub(super) fn stream_filters(dictionary: &super::object::PdfDictionary) -> Vec<String> {

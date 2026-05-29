@@ -1,4 +1,5 @@
 use super::*;
+use crate::{Link, Paragraph};
 
 #[test]
 fn removes_repeated_headers_and_page_footers() {

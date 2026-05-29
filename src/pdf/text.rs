@@ -13,7 +13,10 @@ mod types;
 use std::collections::HashMap;
 
 use super::cmap::CMap;
+use super::cmap::CMapDecodeStats;
 use super::fonts::FontMetrics;
+use super::object::PdfReference;
+use super::struct_tree::McidMap;
 
 pub use lines::{text_lines, TextLine};
 pub use types::TextSegment;
@@ -26,8 +29,13 @@ pub fn decode_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 pub fn extract_text(stream: &[u8]) -> Option<String> {
-    let segments =
-        extract_segments_with_fonts(stream, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    let segments = extract_segments_with_fonts(
+        stream,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     let segments = non_artifact_segments(&segments);
     let text = segments_to_text(&segments);
     strings::is_readable_text(&text).then_some(text)
@@ -37,9 +45,54 @@ pub fn extract_segments_with_fonts(
     stream: &[u8],
     font_cmaps: &HashMap<String, CMap>,
     font_metrics: &HashMap<String, FontMetrics>,
-    struct_roles: &HashMap<u32, String>,
+    struct_roles: &McidMap<String>,
+    struct_actual_text: &McidMap<String>,
 ) -> Vec<TextSegment> {
-    parser::extract_segments_with_fonts(stream, font_cmaps, font_metrics, struct_roles)
+    extract_segments_with_context(
+        stream,
+        font_cmaps,
+        font_metrics,
+        struct_roles,
+        struct_actual_text,
+        None,
+    )
+}
+
+pub fn extract_segments_with_context(
+    stream: &[u8],
+    font_cmaps: &HashMap<String, CMap>,
+    font_metrics: &HashMap<String, FontMetrics>,
+    struct_roles: &McidMap<String>,
+    struct_actual_text: &McidMap<String>,
+    page_reference: Option<PdfReference>,
+) -> Vec<TextSegment> {
+    extract_segments_with_context_and_stats(
+        stream,
+        font_cmaps,
+        font_metrics,
+        struct_roles,
+        struct_actual_text,
+        page_reference,
+    )
+    .0
+}
+
+pub fn extract_segments_with_context_and_stats(
+    stream: &[u8],
+    font_cmaps: &HashMap<String, CMap>,
+    font_metrics: &HashMap<String, FontMetrics>,
+    struct_roles: &McidMap<String>,
+    struct_actual_text: &McidMap<String>,
+    page_reference: Option<PdfReference>,
+) -> (Vec<TextSegment>, CMapDecodeStats) {
+    parser::extract_segments_with_fonts(
+        stream,
+        font_cmaps,
+        font_metrics,
+        struct_roles,
+        struct_actual_text,
+        page_reference,
+    )
 }
 
 pub(super) fn repair_shifted_subset_text(text: &str) -> String {

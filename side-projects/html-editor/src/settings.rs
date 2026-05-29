@@ -14,6 +14,8 @@ pub struct Settings {
     #[serde(default = "default_font_family")]
     pub font_family: String,
     pub accent: [u8; 3],
+    #[serde(default = "default_show_tags")]
+    pub show_tags: bool,
 }
 
 impl Default for Settings {
@@ -26,6 +28,7 @@ impl Default for Settings {
             page_margin: default_page_margin(),
             font_family: default_font_family(),
             accent: [59, 109, 240],
+            show_tags: default_show_tags(),
         }
     }
 }
@@ -39,9 +42,12 @@ fn default_page_margin() -> f32 {
 fn default_font_family() -> String {
     "Georgia, Times New Roman, serif".into()
 }
+fn default_show_tags() -> bool {
+    true
+}
 
 pub fn settings_path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("html-editor").join("settings.json"))
+    crate::paths::config_file("settings.json")
 }
 
 pub fn load() -> Settings {

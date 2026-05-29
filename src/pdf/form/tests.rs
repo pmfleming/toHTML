@@ -50,6 +50,8 @@ endobj
         &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
+        None,
     );
 
     assert_eq!(segments.len(), 1);

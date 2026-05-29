@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
-
-use flate2::read::ZlibDecoder;
 
 mod lexer;
+mod object_stream;
+mod parser;
 
 use lexer::{Lexer, Token};
+use object_stream::{decode_object_stream, parse_object_stream_objects, stream_filters};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PdfValue {
@@ -26,6 +26,15 @@ pub type PdfDictionary = BTreeMap<String, PdfValue>;
 pub struct PdfReference {
     pub object: u32,
     pub generation: u16,
+}
+
+impl Default for PdfReference {
+    fn default() -> Self {
+        Self {
+            object: 0,
+            generation: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +125,7 @@ impl PdfObjects {
                 continue;
             };
             for (object_number, body) in objects {
-                if let Some(value) = Parser::new(body).parse_value() {
+                if let Some(value) = parser::parse_value(body) {
                     self.insert(PdfObject {
                         reference: PdfReference {
                             object: object_number,
@@ -233,7 +242,7 @@ fn find_indirect_object(bytes: &[u8], from: usize) -> Option<ObjectHeader> {
 fn parse_indirect_object(reference: PdfReference, body: &[u8]) -> Option<PdfObject> {
     let stream_start = find_token(body, b"stream", 0);
     let value_bytes = stream_start.map_or(body, |start| &body[..start]);
-    let value = Parser::new(value_bytes).parse_value()?;
+    let value = parser::parse_value(value_bytes)?;
     let stream = stream_start.and_then(|start| stream_bytes(body, start, &value));
     Some(PdfObject {
         reference,
@@ -275,170 +284,6 @@ fn trim_stream_suffix(data: &[u8]) -> &[u8] {
         .unwrap_or(data)
 }
 
-fn stream_filters(dictionary: &PdfDictionary) -> Vec<String> {
-    match dictionary.get("Filter") {
-        Some(PdfValue::Name(name)) => vec![name.clone()],
-        Some(PdfValue::Array(values)) => values
-            .iter()
-            .filter_map(|value| match value {
-                PdfValue::Name(name) => Some(name.clone()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn decode_object_stream(filters: &[String], data: &[u8]) -> Option<Vec<u8>> {
-    let mut decoded = data.to_vec();
-    for filter in filters {
-        decoded = match filter.as_str() {
-            "FlateDecode" | "Fl" => {
-                let mut decoder = ZlibDecoder::new(decoded.as_slice());
-                let mut output = Vec::new();
-                decoder.read_to_end(&mut output).ok()?;
-                output
-            }
-            _ => return None,
-        };
-    }
-    Some(decoded)
-}
-
-fn parse_object_stream_objects(
-    decoded: &[u8],
-    count: i64,
-    first: i64,
-) -> Option<Vec<(u32, &[u8])>> {
-    let count = usize::try_from(count).ok()?;
-    let first = usize::try_from(first).ok()?;
-    if first > decoded.len() {
-        return None;
-    }
-
-    let header = std::str::from_utf8(&decoded[..first]).ok()?;
-    let numbers = header
-        .split_whitespace()
-        .filter_map(|token| token.parse::<usize>().ok())
-        .collect::<Vec<_>>();
-    if numbers.len() < count * 2 {
-        return None;
-    }
-
-    let entries = numbers
-        .chunks_exact(2)
-        .take(count)
-        .filter_map(|pair| Some((u32::try_from(pair[0]).ok()?, pair[1])))
-        .collect::<Vec<_>>();
-
-    let mut objects = Vec::new();
-    for (index, (object, offset)) in entries.iter().enumerate() {
-        let start = first.checked_add(*offset)?;
-        let end = entries
-            .get(index + 1)
-            .map(|(_, next_offset)| first + *next_offset)
-            .unwrap_or(decoded.len());
-        if start >= end || end > decoded.len() {
-            continue;
-        }
-        objects.push((*object, &decoded[start..end]));
-    }
-    Some(objects)
-}
-
-struct Parser<'a> {
-    lexer: Lexer<'a>,
-    peeked: Vec<Token>,
-}
-
-impl<'a> Parser<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self {
-            lexer: Lexer::new(bytes),
-            peeked: Vec::new(),
-        }
-    }
-
-    fn parse_value(&mut self) -> Option<PdfValue> {
-        match self.next()? {
-            Token::Null => Some(PdfValue::Null),
-            Token::Bool(value) => Some(PdfValue::Bool(value)),
-            Token::Integer(value) => self.number_or_reference(value),
-            Token::Real(value) => Some(PdfValue::Real(value)),
-            Token::Name(name) => Some(PdfValue::Name(name)),
-            Token::String(bytes) | Token::HexString(bytes) => Some(PdfValue::String(bytes)),
-            Token::ArrayStart => Some(PdfValue::Array(self.array())),
-            Token::DictStart => Some(PdfValue::Dictionary(self.dictionary())),
-            Token::Word(_) | Token::ArrayEnd | Token::DictEnd => None,
-        }
-    }
-
-    fn number_or_reference(&mut self, object: i64) -> Option<PdfValue> {
-        let generation = match self.next() {
-            Some(Token::Integer(generation)) => generation,
-            Some(token) => {
-                self.push_back(token);
-                return Some(PdfValue::Integer(object));
-            }
-            None => return Some(PdfValue::Integer(object)),
-        };
-
-        match self.next() {
-            Some(Token::Word(word)) if word == "R" => Some(PdfValue::Reference(PdfReference {
-                object: u32::try_from(object).ok()?,
-                generation: u16::try_from(generation).ok()?,
-            })),
-            Some(token) => {
-                self.push_back(token);
-                self.push_back(Token::Integer(generation));
-                Some(PdfValue::Integer(object))
-            }
-            None => {
-                self.push_back(Token::Integer(generation));
-                Some(PdfValue::Integer(object))
-            }
-        }
-    }
-
-    fn array(&mut self) -> Vec<PdfValue> {
-        let mut values = Vec::new();
-        while let Some(token) = self.next() {
-            if token == Token::ArrayEnd {
-                break;
-            }
-            self.push_back(token);
-            if let Some(value) = self.parse_value() {
-                values.push(value);
-            }
-        }
-        values
-    }
-
-    fn dictionary(&mut self) -> PdfDictionary {
-        let mut dictionary = PdfDictionary::new();
-        while let Some(token) = self.next() {
-            if token == Token::DictEnd {
-                break;
-            }
-            let Token::Name(key) = token else {
-                continue;
-            };
-            if let Some(value) = self.parse_value() {
-                dictionary.insert(key, value);
-            }
-        }
-        dictionary
-    }
-
-    fn next(&mut self) -> Option<Token> {
-        self.peeked.pop().or_else(|| self.lexer.next_token())
-    }
-
-    fn push_back(&mut self, token: Token) {
-        self.peeked.push(token);
-    }
-}
-
 fn find_token(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     haystack[from..]
         .windows(needle.len())
@@ -449,8 +294,7 @@ fn find_token(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::{write::ZlibEncoder, Compression};
-    use std::io::Write;
+    use crate::pdf::compression;
 
     #[test]
     fn parses_nested_strings_hex_names_and_references() {
@@ -505,9 +349,7 @@ endobj
         let mut body = header.into_bytes();
         body.extend_from_slice(first_body);
         body.extend_from_slice(second_body);
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&body).unwrap();
-        let compressed = encoder.finish().unwrap();
+        let compressed = compression::zlib_encode(&body).unwrap();
         let first = body.len() - first_body.len() - second_body.len();
         let mut pdf =
             format!("7 0 obj << /Type /ObjStm /N 2 /First {first} /Filter /FlateDecode /Length ")

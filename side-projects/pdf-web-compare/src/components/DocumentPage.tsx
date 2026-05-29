@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as pdfjs from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import { fallbackHtmlLayout, fallbackHtmlPageSlice, measureHtmlLayout } from "../htmlLayout";
-import type { HtmlPageLayout, LibraryFile, Side } from "../types";
+import type { DocumentRenderMode, HtmlPageLayout, LibraryFile, Side } from "../types";
 import { clamp } from "../utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -11,18 +11,28 @@ export function DocumentPage({
   file,
   localPage,
   zoom,
+  renderMode = "source",
   onPageCount,
 }: {
   file: LibraryFile;
   localPage: number;
   zoom: number;
+  renderMode?: DocumentRenderMode;
   onPageCount: (count: number) => void;
 }) {
   if (file.kind === "pdf") {
     return <PdfPage file={file} pageNumber={localPage} zoom={zoom} onPageCount={onPageCount} />;
   }
   if (file.kind === "html") {
-    return <HtmlPage file={file} pageNumber={localPage} zoom={zoom} onPageCount={onPageCount} />;
+    return (
+      <HtmlPage
+        file={file}
+        pageNumber={localPage}
+        zoom={zoom}
+        renderMode={renderMode}
+        onPageCount={onPageCount}
+      />
+    );
   }
   return <ImagePage file={file} zoom={zoom} onPageCount={onPageCount} />;
 }
@@ -108,14 +118,17 @@ function HtmlPage({
   file,
   pageNumber,
   zoom,
+  renderMode,
   onPageCount,
 }: {
   file: LibraryFile;
   pageNumber: number;
   zoom: number;
+  renderMode: DocumentRenderMode;
   onPageCount: (count: number) => void;
 }) {
   const [layout, setLayout] = useState<HtmlPageLayout>(() => fallbackHtmlLayout(1));
+  const url = renderMode === "editor" ? editorPreviewUrl(file) : file.url;
   const currentPageIndex = clamp(pageNumber, 1, layout.pages.length) - 1;
   const page = layout.pages[currentPageIndex] ?? fallbackHtmlPageSlice(0, 1);
   const scaledWidth = Math.round(page.width * zoom);
@@ -125,7 +138,7 @@ function HtmlPage({
 
   useEffect(() => {
     setLayout(fallbackHtmlLayout(1));
-  }, [file.url]);
+  }, [url]);
 
   const handleLoad = useCallback(
     (event: React.SyntheticEvent<HTMLIFrameElement>) => {
@@ -151,8 +164,8 @@ function HtmlPage({
   return (
     <div className="html-frame-window" style={{ width: scaledWidth, height: scaledHeight }}>
       <iframe
-        title={`${file.name} page ${pageNumber}`}
-        src={file.url}
+        title={`${renderMode === "editor" ? "Editor preview" : file.name} page ${pageNumber}`}
+        src={url}
         onLoad={handleLoad}
         scrolling="no"
         style={{
@@ -164,6 +177,18 @@ function HtmlPage({
       />
     </div>
   );
+}
+
+function editorPreviewUrl(file: LibraryFile) {
+  return `/api/editor-preview?file=${encodeURIComponent(file.relativePath)}${versionQuery(file.url)}`;
+}
+
+function versionQuery(url: string) {
+  const query = url.split("?")[1];
+  if (!query) {
+    return "";
+  }
+  return `&${query}`;
 }
 
 function ImagePage({

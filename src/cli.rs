@@ -1,4 +1,5 @@
 mod assets;
+#[cfg(feature = "interactive-gui")]
 mod interactive;
 
 use std::env;
@@ -17,7 +18,7 @@ pub fn run_from_env() -> Result<(), CliError> {
 fn run(args: Vec<String>) -> Result<(), CliError> {
     let options = Options::parse(args)?;
     if options.interactive {
-        return interactive::run();
+        return run_interactive();
     }
 
     let output = options
@@ -30,6 +31,18 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
         Some(output.as_path()),
         options.asset_dir.as_deref(),
     )
+}
+
+#[cfg(feature = "interactive-gui")]
+fn run_interactive() -> Result<(), CliError> {
+    interactive::run()
+}
+
+#[cfg(not(feature = "interactive-gui"))]
+fn run_interactive() -> Result<(), CliError> {
+    Err(CliError::Interactive(
+        "interactive GUI is not enabled; rebuild with --features interactive-gui".to_string(),
+    ))
 }
 
 fn convert_file(
@@ -135,6 +148,7 @@ impl Format {
         }
     }
 
+    #[cfg_attr(not(feature = "interactive-gui"), allow(dead_code))]
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Markdown => "Markdown",

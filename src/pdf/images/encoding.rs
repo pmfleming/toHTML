@@ -1,9 +1,12 @@
-use std::io::Write;
+mod palette;
+mod png;
 
-use flate2::{write::ZlibEncoder, Compression};
+#[cfg(test)]
+pub(super) use png::base64;
+pub(super) use png::data_uri;
 
-use super::super::object::{PdfDictionary, PdfDictionaryExt, PdfObjects, PdfReference, PdfValue};
-use super::super::streams;
+use super::super::object::{PdfDictionary, PdfDictionaryExt, PdfObjects, PdfValue};
+use palette::indexed_palette;
 
 pub(super) fn png_from_raw_image(
     objects: &PdfObjects,
@@ -25,18 +28,7 @@ pub(super) fn png_from_raw_image(
         scanlines.extend_from_slice(row);
     }
 
-    let mut png = Vec::new();
-    png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
-    let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&(width as u32).to_be_bytes());
-    ihdr.extend_from_slice(&(height as u32).to_be_bytes());
-    ihdr.push(8);
-    ihdr.push(prepared.color.png_type());
-    ihdr.extend_from_slice(&[0, 0, 0]);
-    push_png_chunk(&mut png, b"IHDR", &ihdr);
-    push_png_chunk(&mut png, b"IDAT", &zlib_compress(&scanlines)?);
-    push_png_chunk(&mut png, b"IEND", &[]);
-    Ok(png)
+    png::encode_png(width, height, prepared.color.png_type(), &scanlines)
 }
 
 pub(super) fn png_alpha_from_gray_mask(
@@ -77,18 +69,7 @@ pub(super) fn png_alpha_from_gray_mask(
         }
     }
 
-    let mut png = Vec::new();
-    png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
-    let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&(width as u32).to_be_bytes());
-    ihdr.extend_from_slice(&(height as u32).to_be_bytes());
-    ihdr.push(8);
-    ihdr.push(6);
-    ihdr.extend_from_slice(&[0, 0, 0]);
-    push_png_chunk(&mut png, b"IHDR", &ihdr);
-    push_png_chunk(&mut png, b"IDAT", &zlib_compress(&scanlines)?);
-    push_png_chunk(&mut png, b"IEND", &[]);
-    Ok(png)
+    png::encode_png(width, height, 6, &scanlines)
 }
 
 fn reject_decode_predictors(dictionary: &PdfDictionary) -> Result<(), String> {
@@ -116,13 +97,13 @@ fn image_dimension(dictionary: &PdfDictionary, key: &str) -> Result<usize, Strin
 }
 
 #[derive(Debug, Clone, Copy)]
-enum PngColor {
+pub(in crate::pdf::images::encoding) enum PngColor {
     Grayscale,
     Rgb,
 }
 
 impl PngColor {
-    fn channels(self) -> usize {
+    pub(in crate::pdf::images::encoding) fn channels(self) -> usize {
         match self {
             Self::Grayscale => 1,
             Self::Rgb => 3,
@@ -186,109 +167,6 @@ fn prepare_image(
         }
     }
     Ok(PreparedImage { color, pixels })
-}
-
-#[derive(Debug)]
-struct IndexedPalette {
-    color: PngColor,
-    lookup: Vec<u8>,
-}
-
-fn indexed_palette(
-    objects: &PdfObjects,
-    dictionary: &PdfDictionary,
-) -> Result<Option<IndexedPalette>, String> {
-    let Some(PdfValue::Array(values)) = dictionary.get("ColorSpace") else {
-        return Ok(None);
-    };
-    if values.len() != 4 {
-        return Err(format!(
-            "unsupported image color space array with {} entries",
-            values.len()
-        ));
-    }
-    if !matches!(values.first(), Some(PdfValue::Name(name)) if name == "Indexed" || name == "I") {
-        return Ok(None);
-    }
-    let color = match values.get(1) {
-        Some(PdfValue::Name(name)) if name == "DeviceRGB" || name == "RGB" => PngColor::Rgb,
-        Some(PdfValue::Name(name)) if name == "DeviceGray" || name == "G" => PngColor::Grayscale,
-        Some(PdfValue::Array(base)) => indexed_base_color(base)?,
-        Some(PdfValue::Reference(reference)) => indexed_base_color_reference(objects, *reference)?,
-        _ => return Err("unsupported indexed image base color space".to_string()),
-    };
-    let high_value = match values.get(2) {
-        Some(PdfValue::Integer(value)) => usize::try_from(*value)
-            .ok()
-            .ok_or_else(|| format!("invalid indexed image high value {value}"))?,
-        _ => return Err("indexed image color space is missing high value".to_string()),
-    };
-    let lookup = lookup_bytes(objects, values.get(3))?;
-    let required_len = (high_value + 1)
-        .checked_mul(color.channels())
-        .ok_or_else(|| "indexed image palette is too large".to_string())?;
-    if lookup.len() < required_len {
-        return Err(format!(
-            "indexed image palette is shorter than expected ({} < {required_len})",
-            lookup.len()
-        ));
-    }
-    Ok(Some(IndexedPalette {
-        color,
-        lookup: lookup[..required_len].to_vec(),
-    }))
-}
-
-fn indexed_base_color(values: &[PdfValue]) -> Result<PngColor, String> {
-    match values.first() {
-        Some(PdfValue::Name(name)) if name == "DeviceRGB" || name == "RGB" => Ok(PngColor::Rgb),
-        Some(PdfValue::Name(name)) if name == "DeviceGray" || name == "G" => {
-            Ok(PngColor::Grayscale)
-        }
-        _ => Err("unsupported indexed image base color space".to_string()),
-    }
-}
-
-fn indexed_base_color_reference(
-    objects: &PdfObjects,
-    reference: PdfReference,
-) -> Result<PngColor, String> {
-    let Some(object) = objects
-        .get(reference)
-        .or_else(|| objects.latest(reference.object))
-    else {
-        return Err("indexed image base color space reference was not found".to_string());
-    };
-    match &object.value {
-        PdfValue::Name(name) if name == "DeviceRGB" || name == "RGB" => Ok(PngColor::Rgb),
-        PdfValue::Name(name) if name == "DeviceGray" || name == "G" => Ok(PngColor::Grayscale),
-        PdfValue::Array(values) => indexed_base_color(values),
-        _ => Err("unsupported indexed image base color space".to_string()),
-    }
-}
-
-fn lookup_bytes(objects: &PdfObjects, value: Option<&PdfValue>) -> Result<Vec<u8>, String> {
-    match value {
-        Some(PdfValue::String(bytes)) => Ok(bytes.clone()),
-        Some(PdfValue::Reference(reference)) => {
-            let Some(object) = objects
-                .get(*reference)
-                .or_else(|| objects.latest(reference.object))
-            else {
-                return Err("indexed image lookup reference was not found".to_string());
-            };
-            let dictionary = object
-                .dictionary()
-                .ok_or_else(|| "indexed image lookup object is not a stream".to_string())?;
-            let stream = object
-                .stream
-                .as_deref()
-                .ok_or_else(|| "indexed image lookup object has no stream data".to_string())?;
-            streams::decoded_stream_data(dictionary, stream)
-                .map_err(|error| format!("could not decode indexed image lookup stream ({error})"))
-        }
-        _ => Err("indexed image color space is missing lookup data".to_string()),
-    }
 }
 
 fn unpack_component_samples(
@@ -395,60 +273,4 @@ fn decode_parameter_colors(dictionary: &PdfDictionary) -> Option<i64> {
         }),
         _ => None,
     }
-}
-
-fn push_png_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
-    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    png.extend_from_slice(kind);
-    png.extend_from_slice(data);
-    let crc = crc32(kind.iter().copied().chain(data.iter().copied()));
-    png.extend_from_slice(&crc.to_be_bytes());
-}
-
-fn zlib_compress(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(data)
-        .map_err(|error| format!("could not compress PNG image data ({error})"))?;
-    encoder
-        .finish()
-        .map_err(|error| format!("could not finish PNG image data ({error})"))
-}
-
-fn crc32(bytes: impl IntoIterator<Item = u8>) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = 0u32.wrapping_sub(crc & 1);
-            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-        }
-    }
-    !crc
-}
-pub(super) fn data_uri(media_type: &str, data: &[u8]) -> String {
-    format!("data:{media_type};base64,{}", base64(data))
-}
-
-pub(super) fn base64(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let a = chunk[0];
-        let b = chunk.get(1).copied().unwrap_or(0);
-        let c = chunk.get(2).copied().unwrap_or(0);
-        output.push(TABLE[usize::from(a >> 2)] as char);
-        output.push(TABLE[usize::from(((a & 0b0000_0011) << 4) | (b >> 4))] as char);
-        if chunk.len() > 1 {
-            output.push(TABLE[usize::from(((b & 0b0000_1111) << 2) | (c >> 6))] as char);
-        } else {
-            output.push('=');
-        }
-        if chunk.len() > 2 {
-            output.push(TABLE[usize::from(c & 0b0011_1111)] as char);
-        } else {
-            output.push('=');
-        }
-    }
-    output
 }

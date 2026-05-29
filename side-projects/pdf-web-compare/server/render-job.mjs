@@ -3,7 +3,7 @@ import path from "node:path";
 import { collectFiles } from "./file-library.mjs";
 import { outputHtmlPath, runToHtml } from "./tohtml-runner.mjs";
 
-export function createRenderJobService({ inputDir, outputDir, mainProjectRoot }) {
+export function createRenderJobService({ getInputDir, outputDir, mainProjectRoot }) {
   let job = idleRenderJob();
 
   return {
@@ -16,6 +16,7 @@ export function createRenderJobService({ inputDir, outputDir, mainProjectRoot })
         return { statusCode: 409, job };
       }
 
+      const inputDir = getInputDir();
       const pdfs = await inputPdfs(inputDir);
       job = createRunningJob(pdfs, includeImages);
       if (pdfs.length > 0) {
